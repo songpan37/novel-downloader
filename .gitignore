@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+
+# Test
+.pytest_cache/
+.tox/
+
+# Temp
+tmp/
+*.tmp
+test.html
+
+# Legacy files (not part of new architecture)
+3yt_download.py
+69shuba_download.py
+92yq_download.py
+bqg_download.py
+chapter_merger.py
+common.py
+commons/
+novel_collector.py
+novel_spliter.py
+remove_files.py
+小说完整内容.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (user-specific)
+config.json
