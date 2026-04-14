@@ -283,6 +283,7 @@ class MainWindow(QMainWindow):
 
         try:
             all_results = []
+            search_failed = False
             for plugin_name in self.plugin_registry.list_plugins():
                 plugin = self.plugin_registry.get_plugin(plugin_name)
                 if plugin:
@@ -290,10 +291,19 @@ class MainWindow(QMainWindow):
                         results = plugin.search(keyword)
                         all_results.extend(results)
                     except Exception as e:
-                        pass
+                        import traceback
+                        traceback.print_exc()
+                        self.status_label.setText(f"插件 {plugin_name} 搜索失败: {e}")
+                        search_failed = True
 
-            self.display_results(all_results)
-            self.status_label.setText(f"找到 {len(all_results)} 个结果")
+            if search_failed:
+                self.display_results([])
+            elif all_results:
+                self.display_results(all_results)
+                self.status_label.setText(f"找到 {len(all_results)} 个结果")
+            else:
+                self.display_results([])
+                self.status_label.setText("未找到结果，请尝试其他关键词")
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"搜索失败: {e}")

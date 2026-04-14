@@ -63,7 +63,9 @@ class Plugin3yt(BasePlugin):
                     plugin=self.name
                 ))
         except Exception as e:
-            pass
+            import traceback
+            traceback.print_exc()
+            raise  # Re-raise so the caller knows search failed
 
         return results
 

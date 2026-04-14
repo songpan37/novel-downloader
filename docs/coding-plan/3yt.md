@@ -2,8 +2,9 @@
 https://www.3yt.org/
 
 # 搜索流程
+打开网站 https://www.3yt.org/
 
-步骤1：如下输入框，输入书名：
+步骤1：在如下输入框，输入书名：
 ```html
 <input class="search" id="bdcsMain" name="searchkey" type="text" maxlength="30" value="可搜书名和作者，请您少字也别输错字。" title="请正确输入" onfocus="this.style.color = '#000000';this.focus();if(this.value=='可搜书名和作者，请您少字也别输错字。'){this.value='';}" ondblclick="javascript:this.value=''" style="color: rgb(0, 0, 0);">
 ```
