@@ -38,7 +38,9 @@ class ConfigManager:
 
     def save(self, config: UserConfig):
         """Save configuration to file"""
-        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+        dir_path = os.path.dirname(self.config_file)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(asdict(config), f, indent=4, ensure_ascii=False)
 
