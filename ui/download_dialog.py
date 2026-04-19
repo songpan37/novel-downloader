@@ -2,15 +2,16 @@
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QProgressBar, QListWidget, QPushButton, QWidget
+    QProgressBar, QListWidget, QPushButton, QWidget,
+    QComboBox, QMessageBox
 )
 from PySide6.QtCore import QThread, Signal, Qt
 from typing import List
 import os
 
 from core.plugin_interface import SearchResult, ChapterInfo
-from core.plugin_registry import PluginRegistry
 from core.download_manager import DownloadManager, DownloadMeta
+from core.config import ConfigManager
 from ui.theme import get_stylesheet, COLORS, SPACING, RADIUS, FONT_SIZES
 from datetime import datetime
 
@@ -24,35 +25,54 @@ class DownloadWorker(QThread):
     error = Signal(str)
 
     def __init__(self, result: SearchResult, book_save_path: str,
-                 download_manager: DownloadManager, parent=None):
+                 download_manager: DownloadManager, plugin, parent=None):
         super().__init__(parent)
         self.result = result
         self.book_save_path = book_save_path
         self.download_manager = download_manager
+        self.plugin = plugin  # 独立的插件实例
         self._is_running = True
+
+    def _log(self, msg: str):
+        """Print log message with timestamp."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"[{timestamp}] [下载] {msg}")
 
     def run(self):
         """Execute download"""
+        self._log(f"开始下载: 《{self.result.title}》")
+        self._log(f"保存路径: {self.book_save_path}")
+        self._log(f"来源插件: {self.result.plugin}")
+
         try:
-            plugin = PluginRegistry.get_instance().get_plugin(self.result.plugin)
-            if not plugin:
-                self.error.emit(f"找不到插件: {self.result.plugin}")
+            if not self.plugin:
+                error_msg = f"找不到插件: {self.result.plugin}"
+                self._log(f"错误: {error_msg}")
+                self.error.emit(error_msg)
                 return
 
+            self._log("正在获取章节列表...")
             self.chapter_status.emit(-1, "获取章节列表...")
-            chapters = plugin.get_chapter_list(self.result.url)
+            chapters = self.plugin.get_chapter_list(self.result.url)
 
             if not chapters:
-                self.error.emit("无法获取章节列表")
+                error_msg = "无法获取章节列表"
+                self._log(f"错误: {error_msg}")
+                self.error.emit(error_msg)
                 return
 
             total = len(chapters)
+            self._log(f"共 {total} 个章节，开始下载...")
+            self._log(f"URL: {self.result.url}")
+
             os.makedirs(self.book_save_path, exist_ok=True)
 
             existing_meta = self.download_manager.load_meta(self.result.url, self.result.plugin)
             downloaded = {}
             if existing_meta:
                 downloaded = existing_meta.downloaded_chapters
+                self._log(f"发现已下载章节: {len(downloaded)} 个，将跳过")
 
             meta = DownloadMeta(
                 book_url=self.result.url,
@@ -64,15 +84,33 @@ class DownloadWorker(QThread):
 
             for i, chapter in enumerate(chapters):
                 if not self._is_running:
+                    self._log("下载已取消")
                     break
 
-                if str(chapter.index) in downloaded:
+                chapter_key = str(chapter.index)
+
+                # Check if chapter file already exists and has content > 0
+                chapter_file_path = self.download_manager.get_chapter_file_path(
+                    self.book_save_path, chapter.index, chapter.title
+                )
+                file_exists_and_not_empty = os.path.exists(chapter_file_path) and os.path.getsize(chapter_file_path) > 0
+
+                if chapter_key in downloaded or file_exists_and_not_empty:
+                    if file_exists_and_not_empty and chapter_key not in downloaded:
+                        # File exists but not in meta, add to downloaded
+                        downloaded[chapter_key] = chapter.title
+                        meta.downloaded_chapters = downloaded
+                        self.download_manager.save_meta(self.book_save_path, meta)
+                    self._log(f"[{i+1}/{total}] 跳过 第{chapter.index}章 - {chapter.title} (已存在)")
                     self.chapter_status.emit(chapter.index, "已存在")
                     continue
 
+                self._log(f"[{i+1}/{total}] 下载 第{chapter.index}章 - {chapter.title}")
+                self._log(f"  URL: {chapter.url}")
                 self.chapter_status.emit(chapter.index, "下载中...")
+
                 try:
-                    content = plugin.get_chapter_content(chapter.url)
+                    content = self.plugin.get_chapter_content(chapter.url)
                     if content:
                         self.download_manager.save_chapter_content(
                             self.book_save_path,
@@ -80,25 +118,32 @@ class DownloadWorker(QThread):
                             chapter.title,
                             content
                         )
-                        downloaded[str(chapter.index)] = chapter.title
+                        downloaded[chapter_key] = chapter.title
                         meta.downloaded_chapters = downloaded
                         meta.last_updated = datetime.now().isoformat()
                         self.download_manager.save_meta(self.book_save_path, meta)
-                        self.chapter_status.emit(chapter.index, "✓ 完成")
+                        self._log(f"  完成，内容长度: {len(content)} 字符")
+                        self.chapter_status.emit(chapter.index, "完成")
+                        self.progress.emit(i + 1, total)
                     else:
+                        self._log(f"  失败: 内容为空")
                         self.chapter_status.emit(chapter.index, "内容为空")
                 except Exception as e:
-                    self.chapter_status.emit(chapter.index, f"✗ 失败")
-
-                self.progress.emit(i + 1, total)
+                    self._log(f"  失败: {e}")
+                    self.chapter_status.emit(chapter.index, "失败")
 
             if len(downloaded) == total:
                 self.download_manager.delete_meta(self.book_save_path)
 
+            self._log(f"下载完成! 共 {len(downloaded)}/{total} 个章节")
             self.finished.emit()
 
         except Exception as e:
-            self.error.emit(str(e))
+            error_msg = str(e)
+            self._log(f"下载出错: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            self.error.emit(error_msg)
 
     def stop(self):
         """Stop the download"""
@@ -106,147 +151,283 @@ class DownloadWorker(QThread):
 
 
 class DownloadDialog(QDialog):
-    """Download progress dialog with modern dark UI"""
+    """Download dialog with category selection and download progress"""
 
-    def __init__(self, result: SearchResult, book_save_path: str,
-                 download_manager: DownloadManager, parent=None):
+    def __init__(self, result: SearchResult, download_manager: DownloadManager,
+                 config_manager: ConfigManager, plugin, parent=None):
         super().__init__(parent)
         self.result = result
-        self.book_save_path = book_save_path
         self.download_manager = download_manager
+        self.config_manager = config_manager
+        self.plugin = plugin  # 独立的插件实例
+        self.config = config_manager.load()
         self.worker = None
         self.chapter_status_map = {}
+        self.book_save_path = ""
+        self.category_selected = None
         self.init_ui()
 
     def init_ui(self):
         """Initialize the dialog UI"""
         self.setWindowTitle("下载小说")
-        self.setMinimumSize(520, 450)
-        self.setStyleSheet(get_stylesheet())
+        self.setMinimumSize(520, 350)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a1a;
+            }
+            QWidget {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QLabel {
+                color: #a0a0a0;
+            }
+            QComboBox {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #e0e0e0;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                selection-background-color: #3a3a3a;
+            }
+            QPushButton {
+                background-color: #3a3a3a;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #e0e0e0;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QListWidget {
+                background-color: #2a2a2a;
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+                color: #e0e0e0;
+            }
+            QListWidget::item {
+                padding: 4px 8px;
+                color: #808080;
+            }
+            QListWidget::item:selected {
+                background-color: transparent;
+                color: #e0e0e0;
+            }
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(SPACING["lg"], SPACING["lg"], SPACING["lg"], SPACING["lg"])
-        layout.setSpacing(SPACING["md"])
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
-        # Book info card
-        info_card = QWidget()
-        info_card.setStyleSheet(f"""
-            background-color: {COLORS["bg_secondary"]};
-            border-radius: {RADIUS["lg"]}px;
-            padding: {SPACING["md"]}px;
-        """)
-        info_layout = QVBoxLayout(info_card)
-        info_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        info_layout.setSpacing(SPACING["sm"])
+        # Book info
+        info_label = QLabel(f"《{self.result.title}》")
+        info_label.setStyleSheet("color: #e0e0e0; font-size: 16px; font-weight: bold;")
+        layout.addWidget(info_label)
 
-        # Title
-        title_label = QLabel(f"📖 {self.result.title}")
-        title_label.setStyleSheet(f"""
-            color: {COLORS["text_primary"]};
-            font-size: {FONT_SIZES["lg"]}px;
-            font-weight: bold;
-        """)
-        info_layout.addWidget(title_label)
+        author_label = QLabel(f"作者: {self.result.author}  来源: {self.result.plugin}")
+        author_label.setStyleSheet("color: #808080; font-size: 13px;")
+        layout.addWidget(author_label)
 
-        # Author
-        author_label = QLabel(f"✍️ {self.result.author}")
-        author_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        info_layout.addWidget(author_label)
+        # Category selection section
+        category_label = QLabel("选择保存类别")
+        category_label.setStyleSheet("color: #808080; font-size: 13px;")
+        layout.addWidget(category_label)
 
-        # Save path
-        path_label = QLabel(f"📁 {self.book_save_path}")
-        path_label.setStyleSheet(f"""
-            color: {COLORS["text_tertiary"]};
-            font-size: {FONT_SIZES["xs"]}px;
-        """)
-        path_label.setWordWrap(True)
-        info_layout.addWidget(path_label)
+        category_layout = QHBoxLayout()
+        category_layout.setSpacing(8)
 
-        layout.addWidget(info_card)
+        self.category_combo = QComboBox()
+        self.category_combo.setMinimumWidth(200)
+        self.update_category_combo()
+        category_layout.addWidget(self.category_combo)
 
-        # Progress section
-        progress_label = QLabel("下载进度")
-        progress_label.setStyleSheet(f"""
-            color: {COLORS["text_secondary"]};
-            font-size: {FONT_SIZES["sm"]}px;
-            font-weight: bold;
-        """)
-        layout.addWidget(progress_label)
+        self.add_category_btn = QPushButton("新增类别")
+        self.add_category_btn.setFixedWidth(80)
+        self.add_category_btn.clicked.connect(self.add_category)
+        category_layout.addWidget(self.add_category_btn)
 
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {COLORS["bg_secondary"]};
-                border: none;
-                border-radius: {RADIUS["sm"]}px;
-                height: 12px;
-                text-align: center;
-            }}
-            QProgressBar::chunk {{
-                background-color: {COLORS["accent"]};
-                border-radius: {RADIUS["sm"]}px;
-            }}
-        """)
-        layout.addWidget(self.progress_bar)
+        self.delete_category_btn = QPushButton("删除类别")
+        self.delete_category_btn.setFixedWidth(80)
+        self.delete_category_btn.clicked.connect(self.delete_category)
+        category_layout.addWidget(self.delete_category_btn)
 
-        # Status label
-        self.status_label = QLabel("准备下载...")
-        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        layout.addWidget(self.status_label)
+        category_layout.addStretch()
+        layout.addLayout(category_layout)
 
-        # Chapter list
-        self.chapter_list = QListWidget()
-        self.chapter_list.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {COLORS["bg_secondary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: {SPACING["xs"]}px;
-                color: {COLORS["text_primary"]};
-            }}
-            QListWidget::item {{
-                padding: {SPACING["xs"]}px {SPACING["sm"]}px;
-                border-radius: {RADIUS["sm"]}px;
-                color: {COLORS["text_secondary"]};
-            }}
-            QListWidget::item:selected {{
-                background-color: transparent;
-                color: {COLORS["text_primary"]};
-            }}
-        """)
-        layout.addWidget(self.chapter_list, 1)
+        # Download path preview
+        self.path_label = QLabel("保存路径: ")
+        self.path_label.setStyleSheet("color: #606060; font-size: 12px;")
+        self.path_label.setWordWrap(True)
+        layout.addWidget(self.path_label)
+
+        self.category_combo.currentTextChanged.connect(self.on_category_changed)
 
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
         self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_tertiary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 10px 24px;
-                color: {COLORS["text_primary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["bg_elevated"]};
-            }}
-        """)
         self.cancel_btn.clicked.connect(self.on_cancel)
         button_layout.addWidget(self.cancel_btn)
+
+        self.confirm_btn = QPushButton("开始下载")
+        self.confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a7c4a;
+                border: none;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #5a9c5a;
+            }
+        """)
+        self.confirm_btn.clicked.connect(self.on_confirm)
+        button_layout.addWidget(self.confirm_btn)
+
         layout.addLayout(button_layout)
+
+        # Download progress section (hidden initially)
+        self.progress_widget = QWidget()
+        self.progress_layout = QVBoxLayout(self.progress_widget)
+        self.progress_layout.setContentsMargins(0, 16, 0, 0)
+        self.progress_layout.setSpacing(12)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: #2a2a2a;
+                border: none;
+                border-radius: 4px;
+                height: 8px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4a7c4a;
+                border-radius: 4px;
+            }
+        """)
+        self.progress_layout.addWidget(self.progress_bar)
+
+        self.status_label = QLabel("准备下载...")
+        self.status_label.setStyleSheet("color: #808080; font-size: 13px;")
+        self.progress_layout.addWidget(self.status_label)
+
+        self.chapter_list = QListWidget()
+        self.chapter_list.setMaximumHeight(150)
+        self.progress_layout.addWidget(self.chapter_list)
+
+        layout.addWidget(self.progress_widget)
+        self.progress_widget.setVisible(False)
+
+    def update_category_combo(self):
+        """Update category combo box."""
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+
+        self.category_combo.addItem("请选择类别", userData="")
+        self.category_combo.setCurrentIndex(0)
+
+        if self.config.categories:
+            for cat in self.config.categories:
+                self.category_combo.addItem(cat, userData=cat)
+        elif self.config.last_category:
+            self.category_combo.addItem(self.config.last_category, userData=self.config.last_category)
+
+        self.category_combo.blockSignals(False)
+
+    def on_category_changed(self, text: str):
+        """Handle category selection changed."""
+        if text == "请选择类别" or not text:
+            self.path_label.setText("保存路径: ")
+            self.book_save_path = ""
+            return
+
+        self.book_save_path = self.download_manager.get_book_save_path(
+            self.config.root_dir, text, self.result.title
+        )
+        self.path_label.setText(f"保存路径: {self.book_save_path}")
+        self.config_manager.set_last_category(text)
+
+    def add_category(self):
+        """Show dialog to add a new category."""
+        from PySide6.QtWidgets import QInputDialog
+
+        new_category, ok = QInputDialog.getText(
+            self, "新增类别", "请输入新类别名称:", flags=Qt.WindowType.Dialog
+        )
+
+        if ok and new_category.strip():
+            new_category = new_category.strip()
+            self.config_manager.add_category(new_category)
+            self.config = self.config_manager.load()
+            self.update_category_combo()
+            index = self.category_combo.findText(new_category)
+            if index >= 0:
+                self.category_combo.setCurrentIndex(index)
+
+    def delete_category(self):
+        """Delete the currently selected category."""
+        current = self.category_combo.currentText()
+        if current == "请选择类别" or not current:
+            QMessageBox.warning(self, "提示", "请先选择一个类别")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除类别 '{current}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.config_manager.remove_category(current)
+            self.config = self.config_manager.load()
+            self.update_category_combo()
+
+    def on_confirm(self):
+        """Handle confirm button - start download."""
+        category = self.category_combo.currentText()
+        if category == "请选择类别" or not category:
+            QMessageBox.warning(self, "提示", "请先选择一个类别")
+            return
+
+        if not self.config.root_dir:
+            QMessageBox.warning(self, "提示", "请先在设置中设置存储目录")
+            return
+
+        self.category_selected = category
+        self.book_save_path = self.download_manager.get_book_save_path(
+            self.config.root_dir, category, self.result.title
+        )
+
+        # Hide category selection, show progress
+        self.progress_widget.setVisible(True)
+        self.setMinimumSize(520, 500)
+
+        # Disable confirm button and category controls
+        self.confirm_btn.setEnabled(False)
+        self.category_combo.setEnabled(False)
+        self.add_category_btn.setEnabled(False)
+        self.delete_category_btn.setEnabled(False)
 
         # Start download
         self.start_download()
 
     def start_download(self):
-        """Start the download worker"""
+        """Start the download worker."""
         self.worker = DownloadWorker(
             self.result,
             self.book_save_path,
             self.download_manager,
+            self.plugin,  # 传入独立的插件实例
             self
         )
         self.worker.progress.connect(self.on_progress)
@@ -256,14 +437,14 @@ class DownloadDialog(QDialog):
         self.worker.start()
 
     def on_progress(self, current: int, total: int):
-        """Handle progress update"""
+        """Handle progress update."""
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
         percentage = int(current / total * 100) if total > 0 else 0
-        self.status_label.setText(f"进度: {current}/{total} 章 ({percentage}%)")
+        self.status_label.setText(f"进度: {current}/{total} ({percentage}%)")
 
     def on_chapter_status(self, index: int, status: str):
-        """Handle chapter status update"""
+        """Handle chapter status update."""
         if index == -1:
             self.status_label.setText(status)
             return
@@ -276,24 +457,20 @@ class DownloadDialog(QDialog):
             item = self.chapter_list.item(self.chapter_status_map[index])
             item.setText(f"第{index}章 - {status}")
 
-        # Scroll to latest
-        self.chapter_list.scrollToItem(
-            self.chapter_list.item(self.chapter_status_map[index])
-        )
+        self.chapter_list.scrollToItem(self.chapter_list.item(self.chapter_status_map[index]))
 
     def on_finished(self):
-        """Handle download completion"""
-        self.status_label.setText("✓ 下载完成!")
+        """Handle download completion."""
+        self.status_label.setText("下载完成!")
+        self.status_label.setStyleSheet("color: #4a9f4a; font-size: 13px;")
         self.cancel_btn.setText("关闭")
-        self.status_label.setStyleSheet(f"color: {COLORS['success']};")
 
     def on_error(self, error_msg: str):
-        """Handle download error"""
-        from PySide6.QtWidgets import QMessageBox
+        """Handle download error."""
         QMessageBox.critical(self, "错误", f"下载失败: {error_msg}")
 
     def on_cancel(self):
-        """Handle cancel button"""
+        """Handle cancel button."""
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait()

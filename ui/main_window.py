@@ -1,26 +1,30 @@
-"""Main window for novel downloader - Modern Dark Theme"""
+"""Main window for novel downloader - Simple Clean Style"""
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QComboBox, QLabel,
-    QScrollArea, QGridLayout, QMessageBox, QSizePolicy, QSpacerItem, QStatusBar
+    QLineEdit, QPushButton, QLabel,
+    QListWidget, QListWidgetItem, QAbstractItemView,
+    QMessageBox, QSizePolicy, QStatusBar, QListView, QTabWidget
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
-from typing import List
+from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.plugin_registry import PluginRegistry
 from core.config import ConfigManager
 from core.download_manager import DownloadManager
-from ui.card_widget import CardWidget
 from ui.download_dialog import DownloadDialog
 from ui.settings_dialog import SettingsDialog
-from ui.theme import get_stylesheet, COLORS, SPACING, RADIUS, FONT_SIZES
 from core.plugin_interface import SearchResult
+
+# Import plugin factory functions
+import plugins.plugin_3yt as plugin_3yt_module
+import plugins.plugin_92yq as plugin_92yq_module
 
 
 class MainWindow(QMainWindow):
-    """Main application window with modern dark UI"""
+    """Main application window with simple clean UI"""
 
     def __init__(self):
         super().__init__()
@@ -29,197 +33,206 @@ class MainWindow(QMainWindow):
         self.download_manager = DownloadManager(self.config.root_dir)
         self.plugin_registry = None
 
-        self.init_ui()
-        self.apply_theme()
-        self.load_plugins()
+        # Store search results by plugin for tab display
+        self._search_results_by_plugin: Dict[str, List[SearchResult]] = {}
+        self._search_keyword: str = ""
 
-    def apply_theme(self):
-        """Apply dark theme stylesheet"""
-        self.setStyleSheet(get_stylesheet())
+        self.init_ui()
+        self.load_plugins()
 
     def init_ui(self):
         """Initialize the UI components"""
         self.setWindowTitle("小说下载器")
-        self.setMinimumSize(900, 650)
-        self.setFont(QFont("Segoe UI", FONT_SIZES["md"]))
+        self.setMinimumSize(800, 600)
+        self.setFont(QFont("Segoe UI", 10))
+
+        # Set dark background
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1a1a1a;
+            }
+            QWidget {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QLineEdit {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #e0e0e0;
+            }
+            QLineEdit:focus {
+                border-color: #606060;
+            }
+            QComboBox {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 6px 10px;
+                color: #e0e0e0;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                selection-background-color: #3a3a3a;
+            }
+            QPushButton {
+                background-color: #3a3a3a;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 6px 12px;
+                color: #e0e0e0;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton:pressed {
+                background-color: #2a2a2a;
+            }
+            QLabel {
+                color: #a0a0a0;
+            }
+            QStatusBar {
+                background-color: #1a1a1a;
+                color: #606060;
+            }
+            QScrollBar:vertical {
+                background-color: #2a2a2a;
+                width: 10px;
+            }
+            QScrollBar::handle {
+                background-color: #404040;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:hover {
+                background-color: #505050;
+            }
+            QTabWidget::pane {
+                background-color: transparent;
+                border: none;
+            }
+            QToolTip {
+                color: #000000;
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+            }
+            QTabBar::tab {
+                background-color: #2a2a2a;
+                color: #808080;
+                padding: 8px 16px;
+                border: 1px solid #3a3a3a;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #3a3a3a;
+                color: #e0e0e0;
+            }
+            QTabBar::tab:hover:selected {
+                background-color: #3a3a3a;
+            }
+        """)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(SPACING["lg"], SPACING["lg"], SPACING["lg"], SPACING["lg"])
-        layout.setSpacing(SPACING["md"])
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
-        # ===== Header Section =====
+        # ===== Header =====
         header_layout = QHBoxLayout()
 
-        # Title
-        title = QLabel("📚 小说下载器")
-        title.setStyleSheet(f"""
-            color: {COLORS["text_primary"]};
-            font-size: {FONT_SIZES["2xl"]}px;
-            font-weight: bold;
-        """)
+        title = QLabel("小说下载器")
+        title.setStyleSheet("color: #e0e0e0; font-size: 20px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        # Settings button
-        self.settings_btn = QPushButton("⚙ 设置")
-        self.settings_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_secondary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: {COLORS["text_secondary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["bg_tertiary"]};
-                color: {COLORS["text_primary"]};
-            }}
-        """)
-        header_layout.addWidget(self.settings_btn)
-
-        # Refresh button
-        self.refresh_btn = QPushButton("🔄 刷新插件")
-        self.refresh_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_secondary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: {COLORS["text_secondary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["bg_tertiary"]};
-                color: {COLORS["text_primary"]};
-            }}
-        """)
-        header_layout.addWidget(self.refresh_btn)
+        settings_btn = QPushButton("设置")
+        settings_btn.clicked.connect(self.open_settings)
+        header_layout.addWidget(settings_btn)
 
         layout.addLayout(header_layout)
 
         # ===== Storage Info =====
         storage_layout = QHBoxLayout()
-        storage_icon = QLabel("📁")
-        storage_layout.addWidget(storage_icon)
         storage_layout.addWidget(QLabel("存储目录:"))
         self.root_dir_label = QLabel(self.config.root_dir if self.config.root_dir else "未设置")
-        self.root_dir_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self.root_dir_label.setStyleSheet("color: #606060;")
         storage_layout.addWidget(self.root_dir_label)
         storage_layout.addStretch()
         layout.addLayout(storage_layout)
 
         # ===== Search Section =====
-        search_container = QWidget()
-        search_container.setStyleSheet(f"""
-            background-color: {COLORS["bg_secondary"]};
-            border-radius: {RADIUS["lg"]}px;
-            padding: {SPACING["md"]}px;
-        """)
-        search_layout = QVBoxLayout(search_container)
-        search_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        search_layout.setSpacing(SPACING["md"])
+        search_row_layout = QHBoxLayout()
+        search_row_layout.setSpacing(12)
 
-        # Category row
-        category_row = QHBoxLayout()
-        category_row.addWidget(QLabel("类别"))
-        self.category_combo = QComboBox()
-        self.category_combo.setEditable(True)
-        self.category_combo.setMinimumWidth(150)
-        category_row.addWidget(self.category_combo)
-        self.add_category_btn = QPushButton("+ 新增")
-        self.add_category_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["accent"]};
-                border: none;
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: white;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["accent_hover"]};
-            }}
-        """)
-        category_row.addWidget(self.add_category_btn)
-        category_row.addStretch()
-        search_layout.addLayout(category_row)
-
-        # Search row
-        search_row = QHBoxLayout()
         self.bookname_input = QLineEdit()
         self.bookname_input.setPlaceholderText("输入书名搜索...")
         self.bookname_input.setMinimumWidth(300)
-        search_row.addWidget(self.bookname_input)
-        self.search_btn = QPushButton("🔍 搜索")
-        self.search_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["accent"]};
-                border: none;
-                border-radius: {RADIUS["md"]}px;
-                padding: 10px 24px;
-                color: white;
-                font-weight: bold;
-                font-size: {FONT_SIZES["md"]}px;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["accent_hover"]};
-            }}
-            QPushButton:disabled {{
-                background-color: {COLORS["bg_tertiary"]};
-                color: {COLORS["text_tertiary"]};
-            }}
-        """)
-        search_row.addWidget(self.search_btn)
-        search_layout.addLayout(search_row)
+        self.bookname_input.returnPressed.connect(self.on_search)
+        search_row_layout.addWidget(self.bookname_input, 1)
 
-        layout.addWidget(search_container)
+        self.search_btn = QPushButton("搜索")
+        self.search_btn.setFixedWidth(80)
+        self.search_btn.clicked.connect(self.on_search)
+        search_row_layout.addWidget(self.search_btn)
+
+        layout.addLayout(search_row_layout)
 
         # ===== Results Section =====
         results_label = QLabel("搜索结果")
-        results_label.setStyleSheet(f"""
-            color: {COLORS["text_secondary"]};
-            font-size: {FONT_SIZES["sm"]}px;
-            font-weight: bold;
-        """)
+        results_label.setStyleSheet("color: #808080; font-size: 13px; font-weight: bold;")
         layout.addWidget(results_label)
 
-        # Results scroll area
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet(f"""
-            QScrollArea {{
+        # Tab widget for results
+        self.results_tabs = QTabWidget()
+        self.results_tabs.setStyleSheet("""
+            QTabWidget {
+                background-color: transparent;
+            }
+            QTabWidget::pane {
+                background-color: #2a2a2a;
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+            }
+        """)
+
+        # Tab 1: Exact match results
+        self.exact_list = QListWidget()
+        self.exact_list.setStyleSheet("""
+            QListWidget {
                 background-color: transparent;
                 border: none;
-            }}
+                outline: none;
+            }
+            QListWidget::item {
+                background-color: transparent;
+                border-bottom: 1px solid #3a3a3a;
+                padding: 4px 0;
+            }
+            QListWidget::item:selected {
+                background-color: transparent;
+            }
         """)
-        self.results_widget = QWidget()
-        self.results_widget.setStyleSheet("background-color: transparent;")
-        self.results_layout = QGridLayout(self.results_widget)
-        self.results_layout.setContentsMargins(0, SPACING["sm"], 0, SPACING["sm"])
-        self.results_layout.setSpacing(SPACING["md"])
-        self.scroll_area.setWidget(self.results_widget)
-        layout.addWidget(self.scroll_area, 1)
+        self.exact_list.itemDoubleClicked.connect(self.on_result_double_clicked)
+        self.results_tabs.addTab(self.exact_list, "精确匹配")
+
+        # Tab 2: Other results (grouped by plugin)
+        self.other_tabs = QTabWidget()
+        self.other_tabs.setDocumentMode(True)
+        self.results_tabs.addTab(self.other_tabs, "其他结果")
+
+        layout.addWidget(self.results_tabs, 1)
 
         # ===== Status Bar =====
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet(f"""
-            color: {COLORS["text_tertiary"]};
-            font-size: {FONT_SIZES["sm"]}px;
-        """)
         self.status_bar.addPermanentWidget(self.status_label)
-
-        # Connect signals
-        self.settings_btn.clicked.connect(self.open_settings)
-        self.refresh_btn.clicked.connect(self.load_plugins)
-        self.search_btn.clicked.connect(self.on_search)
-        self.add_category_btn.clicked.connect(self.add_category)
-        self.bookname_input.returnPressed.connect(self.on_search)
-
-        # Load categories
-        self.update_category_combo()
 
     def load_plugins(self):
         """Load and register plugins"""
@@ -240,14 +253,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_label.setText(f"插件加载失败: {e}")
 
-    def update_category_combo(self):
-        """Update category combo box"""
-        self.category_combo.clear()
-        if self.config.categories:
-            self.category_combo.addItems(self.config.categories)
-        elif self.config.last_category:
-            self.category_combo.addItem(self.config.last_category)
-
     def open_settings(self):
         """Open settings dialog"""
         dialog = SettingsDialog(self.config_manager, self)
@@ -255,19 +260,9 @@ class MainWindow(QMainWindow):
             self.config = self.config_manager.load()
             self.download_manager = DownloadManager(self.config.root_dir)
             self.root_dir_label.setText(self.config.root_dir if self.config.root_dir else "未设置")
-            self.update_category_combo()
-
-    def add_category(self):
-        """Add a new category"""
-        new_category = self.category_combo.currentText().strip()
-        if new_category:
-            self.config_manager.add_category(new_category)
-            self.config = self.config_manager.load()
-            self.update_category_combo()
-            self.status_label.setText(f"已添加类别: {new_category}")
 
     def on_search(self):
-        """Handle search button click"""
+        """Handle search button click with concurrent plugin search"""
         keyword = self.bookname_input.text().strip()
         if not keyword:
             QMessageBox.warning(self, "提示", "请输入书名关键字")
@@ -277,19 +272,42 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "设置", "请先在设置中设置存储目录")
             return
 
+        self._search_keyword = keyword
         self.status_label.setText(f"搜索中: {keyword}...")
         self.search_btn.setEnabled(False)
         self.bookname_input.setEnabled(False)
 
+        # Clear previous results
+        self.exact_list.clear()
+        self.other_tabs.clear()
+        self._search_results_by_plugin.clear()
+
+        # Use ThreadPoolExecutor for concurrent search
+        def search_plugin(plugin_name):
+            """Search function to run in thread"""
+            plugin = self.plugin_registry.get_plugin(plugin_name)
+            if plugin:
+                return plugin_name, plugin.search(keyword)
+            return plugin_name, None
+
         try:
+            plugin_names = self.plugin_registry.list_plugins()
             all_results = []
             search_failed = False
-            for plugin_name in self.plugin_registry.list_plugins():
-                plugin = self.plugin_registry.get_plugin(plugin_name)
-                if plugin:
+
+            with ThreadPoolExecutor(max_workers=len(plugin_names)) as executor:
+                future_to_plugin = {
+                    executor.submit(search_plugin, name): name
+                    for name in plugin_names
+                }
+
+                for future in as_completed(future_to_plugin):
+                    plugin_name = future_to_plugin[future]
                     try:
-                        results = plugin.search(keyword)
-                        all_results.extend(results)
+                        name, results = future.result()
+                        if results:
+                            self._search_results_by_plugin[plugin_name] = results
+                            all_results.extend(results)
                     except Exception as e:
                         import traceback
                         traceback.print_exc()
@@ -311,47 +329,233 @@ class MainWindow(QMainWindow):
         finally:
             self.search_btn.setEnabled(True)
             self.bookname_input.setEnabled(True)
+            self.bookname_input.setEnabled(True)
 
     def display_results(self, results: List[SearchResult]):
-        """Display search results as cards"""
-        while self.results_layout.count():
-            item = self.results_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        """Display search results in tabs - exact match and other results grouped by plugin."""
+        self.exact_list.clear()
+        self.other_tabs.clear()
 
         if not results:
-            empty_widget = QLabel("暂无结果，请尝试其他关键词")
-            empty_widget.setStyleSheet(f"""
-                color: {COLORS["text_tertiary"]};
-                font-size: {FONT_SIZES["md"]}px;
-                padding: 40px;
+            return
+
+        # Normalize keyword for comparison (remove spaces, lowercase)
+        normalized_keyword = self._search_keyword.replace(" ", "").lower()
+
+        # Separate exact matches and other results
+        exact_matches = []
+        other_results = []
+
+        for result in results:
+            normalized_title = result.title.replace(" ", "").lower()
+            if normalized_title == normalized_keyword:
+                exact_matches.append(result)
+            else:
+                other_results.append(result)
+
+        # Display exact matches in first tab
+        self._populate_list_widget(self.exact_list, exact_matches)
+
+        # Display other results grouped by plugin in second tab
+        if other_results:
+            plugin_results: Dict[str, List[SearchResult]] = {}
+            for result in other_results:
+                if result.plugin not in plugin_results:
+                    plugin_results[result.plugin] = []
+                plugin_results[result.plugin].append(result)
+
+            for plugin_name, plugin_results_list in plugin_results.items():
+                plugin_list = QListWidget()
+                plugin_list.setStyleSheet("""
+                    QListWidget {
+                        background-color: transparent;
+                        border: none;
+                        outline: none;
+                    }
+                    QListWidget::item {
+                        background-color: transparent;
+                        border-bottom: 1px solid #3a3a3a;
+                        padding: 4px 0;
+                    }
+                    QListWidget::item:selected {
+                        background-color: transparent;
+                    }
+                """)
+                plugin_list.itemDoubleClicked.connect(self.on_result_double_clicked)
+                self._populate_list_widget(plugin_list, plugin_results_list)
+                self.other_tabs.addTab(plugin_list, plugin_name)
+
+            self.results_tabs.setTabEnabled(1, True)
+        else:
+            self.results_tabs.setTabEnabled(1, False)
+
+    def _populate_list_widget(self, list_widget: QListWidget, results: List[SearchResult]):
+        """Populate a list widget with search results."""
+        for result in results:
+            item = QListWidgetItem(list_widget)
+            item.setData(Qt.UserRole, result)
+
+            # Create widget to hold content
+            widget = QWidget()
+            main_layout = QHBoxLayout(widget)
+            main_layout.setContentsMargins(12, 12, 12, 12)
+            main_layout.setSpacing(16)
+
+            # Left side: content
+            content_widget = QWidget()
+            content_layout = QVBoxLayout(content_widget)
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.setSpacing(6)
+
+            # Title row
+            title_layout = QHBoxLayout()
+            title_layout.setSpacing(8)
+
+            # Truncate title if longer than 15 characters
+            display_title = result.title
+            if len(display_title) > 15:
+                display_title = display_title[:15] + "..."
+
+            title_label = QLabel(display_title)
+            title_label.setStyleSheet("color: #e0e0e0; font-size: 15px; font-weight: bold;")
+            title_label.setWordWrap(False)
+            title_label.setToolTip(result.title)  # Show full title on hover
+            title_layout.addWidget(title_label)
+            title_layout.addStretch()
+
+            content_layout.addLayout(title_layout)
+
+            # Info row: 作者 | 来源 | 状态
+            info_layout = QHBoxLayout()
+            info_layout.setSpacing(16)
+
+            author_label = QLabel(f"作者: {result.author}")
+            author_label.setStyleSheet("color: #808080; font-size: 13px;")
+            info_layout.addWidget(author_label)
+
+            source_label = QLabel(f"来源: {result.plugin}")
+            source_label.setStyleSheet("color: #606060; font-size: 12px;")
+            info_layout.addWidget(source_label)
+
+            # Status
+            status_text = "完结" if result.status.value == "完结" else "连载"
+            status_color = "#4a9f4a" if status_text == "完结" else "#c9a227"
+            status_label = QLabel(status_text)
+            status_label.setStyleSheet(f"color: {status_color}; font-size: 12px;")
+            info_layout.addWidget(status_label)
+
+            info_layout.addStretch()
+
+            content_layout.addLayout(info_layout)
+
+            main_layout.addWidget(content_widget, 1)
+
+            # Right side: buttons in one row
+            buttons_widget = QWidget()
+            buttons_layout = QHBoxLayout(buttons_widget)
+            buttons_layout.setContentsMargins(0, 0, 0, 0)
+            buttons_layout.setSpacing(8)
+            buttons_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            # Download button
+            download_btn = QPushButton("下载")
+            download_btn.setFixedWidth(60)
+            download_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4a7c4a;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    color: white;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #5a9c5a;
+                }
             """)
-            empty_widget.setAlignment(Qt.AlignCenter)
-            self.results_layout.addWidget(empty_widget, 0, 0)
+            download_btn.clicked.connect(lambda checked, r=result: self.on_download_clicked(r))
+            buttons_layout.addWidget(download_btn)
+
+            # Open link button
+            open_btn = QPushButton("原链接")
+            open_btn.setFixedWidth(60)
+            open_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4a7c4a;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    color: white;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #5a9c5a;
+                }
+            """)
+            open_btn.clicked.connect(lambda checked, url=result.url: self.open_url(url))
+            buttons_layout.addWidget(open_btn)
+
+            main_layout.addWidget(buttons_widget)
+
+            list_widget.setItemWidget(item, widget)
+
+            # Set a minimum height to ensure content is not truncated
+            size_hint = widget.sizeHint()
+            size_hint.setHeight(max(size_hint.height(), 70))
+            item.setSizeHint(size_hint)
+
+    def on_result_double_clicked(self, item: QListWidgetItem):
+        """Handle result item double click."""
+        result = item.data(Qt.UserRole)
+        if not result:
             return
-
-        for i, result in enumerate(results):
-            row = i // 4
-            col = i % 4
-            card = CardWidget(result)
-            card.double_clicked.connect(self.on_card_double_clicked)
-            self.results_layout.addWidget(card, row, col)
-
-    def on_card_double_clicked(self, result: SearchResult):
-        """Handle card double click - start download"""
-        category = self.category_combo.currentText().strip()
-        if not category:
-            QMessageBox.warning(self, "提示", "请选择或输入类别")
-            return
-
-        book_save_path = self.download_manager.get_book_save_path(
-            self.config.root_dir, category, result.title
-        )
 
         dialog = DownloadDialog(
             result=result,
-            book_save_path=book_save_path,
             download_manager=self.download_manager,
+            config_manager=self.config_manager,
             parent=self
         )
         dialog.exec()
+
+    def on_download_clicked(self, result: SearchResult):
+        """Handle download button click - creates independent plugin instance."""
+        # Create independent plugin instance for this download
+        plugin = self._create_plugin_instance(result.plugin)
+
+        dialog = DownloadDialog(
+            result=result,
+            download_manager=self.download_manager,
+            config_manager=self.config_manager,
+            plugin=plugin,  # 传入独立的插件实例
+            parent=self
+        )
+        dialog.show()  # 非阻塞显示窗口
+
+    def _create_plugin_instance(self, plugin_name: str):
+        """Create an independent plugin instance for a download.
+
+        Each download gets its own plugin instance to avoid conflicts.
+        """
+        if plugin_name == '3yt':
+            return plugin_3yt_module.create_instance(headless=False, slow_mo=100)
+        elif plugin_name == '92yq':
+            return plugin_92yq_module.create_instance()
+        else:
+            # Fallback to registry plugin
+            return self.plugin_registry.get_plugin(plugin_name)
+
+    def open_url(self, url: str):
+        """Open URL in default browser."""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(url))
+
+    def closeEvent(self, event):
+        """Handle window close event - cleanup browser resources."""
+        try:
+            from plugins.plugin_3yt import close_plugin
+            close_plugin()
+        except Exception:
+            pass
+        event.accept()
