@@ -203,6 +203,10 @@ class PluginBqg(BasePlugin):
             _logger.error(f"Search failed: {e}")
             raise
 
+        finally:
+            # Close browser after search to avoid thread issues
+            self._cleanup()
+
         return results
 
     def _parse_search_results(self, html: str) -> List[SearchResult]:
