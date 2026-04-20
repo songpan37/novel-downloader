@@ -177,10 +177,15 @@ class PluginBqg(BasePlugin):
             })
 
             json_url = f"{self.BASE_URL}/user/search.html?q={encoded_keyword}"
-            json_response = session.get(json_url, timeout=self.REQUEST_TIMEOUT, verify=False)
+            json_response = session.get(json_url, timeout=10, verify=False)
             json_response.raise_for_status()
 
             data = json.loads(json_response.text)
+
+            # API may return integer (1) or empty array when no results
+            if not isinstance(data, list):
+                _logger.warning(f"Search API returned {type(data).__name__} instead of list")
+                return results
 
             for item in data:
                 title = item.get('articlename', '')
