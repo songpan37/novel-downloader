@@ -21,6 +21,7 @@ from core.plugin_interface import SearchResult
 # Import plugin factory functions
 import plugins.plugin_3yt as plugin_3yt_module
 import plugins.plugin_92yq as plugin_92yq_module
+import plugins.plugin_bqg as plugin_bqg_module
 
 
 class MainWindow(QMainWindow):
@@ -541,6 +542,8 @@ class MainWindow(QMainWindow):
             return plugin_3yt_module.create_instance(headless=False, slow_mo=100)
         elif plugin_name == '92yq':
             return plugin_92yq_module.create_instance()
+        elif plugin_name == 'bqg':
+            return plugin_bqg_module.create_instance()
         else:
             # Fallback to registry plugin
             return self.plugin_registry.get_plugin(plugin_name)
