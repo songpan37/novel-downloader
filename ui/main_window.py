@@ -24,6 +24,31 @@ import plugins.plugin_92yq as plugin_92yq_module
 import plugins.plugin_bqg as plugin_bqg_module
 
 
+class SearchWorker(QThread):
+    """Worker thread for searching a single plugin."""
+
+    # Signals for search results
+    result_ready = Signal(str, list)  # plugin_name, results
+    search_failed = Signal(str, str)  # plugin_name, error_message
+    search_finished = Signal(str)  # plugin_name
+
+    def __init__(self, plugin_name: str, plugin, keyword: str, parent=None):
+        super().__init__(parent)
+        self.plugin_name = plugin_name
+        self.plugin = plugin
+        self.keyword = keyword
+
+    def run(self):
+        """Execute the search."""
+        try:
+            results = self.plugin.search(self.keyword)
+            self.result_ready.emit(self.plugin_name, results)
+        except Exception as e:
+            self.search_failed.emit(self.plugin_name, str(e))
+        finally:
+            self.search_finished.emit(self.plugin_name)
+
+
 class MainWindow(QMainWindow):
     """Main application window with simple clean UI"""
 
@@ -37,6 +62,11 @@ class MainWindow(QMainWindow):
         # Store search results by plugin for tab display
         self._search_results_by_plugin: Dict[str, List[SearchResult]] = {}
         self._search_keyword: str = ""
+
+        # Track active search workers for cleanup
+        self._search_workers: Dict[str, SearchWorker] = {}
+        self._active_plugin_count = 0
+        self._finished_plugin_count = 0
 
         self.init_ui()
         self.load_plugins()
@@ -263,7 +293,7 @@ class MainWindow(QMainWindow):
             self.root_dir_label.setText(self.config.root_dir if self.config.root_dir else "未设置")
 
     def on_search(self):
-        """Handle search button click with concurrent plugin search"""
+        """Handle search button click - starts async search for each plugin."""
         keyword = self.bookname_input.text().strip()
         if not keyword:
             QMessageBox.warning(self, "提示", "请输入书名关键字")
@@ -282,55 +312,122 @@ class MainWindow(QMainWindow):
         self.exact_list.clear()
         self.other_tabs.clear()
         self._search_results_by_plugin.clear()
+        self._finished_plugin_count = 0
 
-        # Use ThreadPoolExecutor for concurrent search
-        def search_plugin(plugin_name):
-            """Search function to run in thread"""
+        # Start async search for each plugin
+        plugin_names = self.plugin_registry.list_plugins()
+        self._active_plugin_count = len(plugin_names)
+
+        for plugin_name in plugin_names:
             plugin = self.plugin_registry.get_plugin(plugin_name)
-            if plugin:
-                return plugin_name, plugin.search(keyword)
-            return plugin_name, None
+            if not plugin:
+                self._on_plugin_search_finished(plugin_name)
+                continue
 
-        try:
-            plugin_names = self.plugin_registry.list_plugins()
-            all_results = []
-            search_failed = False
+            worker = SearchWorker(plugin_name, plugin, keyword, self)
+            worker.result_ready.connect(self._on_search_result_ready)
+            worker.search_failed.connect(self._on_search_failed)
+            worker.search_finished.connect(self._on_plugin_search_finished)
+            worker.start()
 
-            with ThreadPoolExecutor(max_workers=len(plugin_names)) as executor:
-                future_to_plugin = {
-                    executor.submit(search_plugin, name): name
-                    for name in plugin_names
-                }
+            self._search_workers[plugin_name] = worker
 
-                for future in as_completed(future_to_plugin):
-                    plugin_name = future_to_plugin[future]
-                    try:
-                        name, results = future.result()
-                        if results:
-                            self._search_results_by_plugin[plugin_name] = results
-                            all_results.extend(results)
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        self.status_label.setText(f"插件 {plugin_name} 搜索失败: {e}")
-                        search_failed = True
+    def _on_search_result_ready(self, plugin_name: str, results: List[SearchResult]):
+        """Handle results from a single plugin - append to display."""
+        if plugin_name not in self._search_results_by_plugin:
+            self._search_results_by_plugin[plugin_name] = results
 
-            if search_failed:
-                self.display_results([])
-            elif all_results:
-                self.display_results(all_results)
-                self.status_label.setText(f"找到 {len(all_results)} 个结果")
+        if results:
+            self._append_plugin_results(plugin_name, results)
+
+    def _on_search_failed(self, plugin_name: str, error_message: str):
+        """Handle search failure from a plugin."""
+        self.status_label.setText(f"插件 {plugin_name} 搜索失败: {error_message}")
+
+    def _on_plugin_search_finished(self, plugin_name: str):
+        """Handle when a plugin search is complete."""
+        self._finished_plugin_count += 1
+
+        # Remove worker from tracking
+        if plugin_name in self._search_workers:
+            del self._search_workers[plugin_name]
+
+        # Update status
+        remaining = self._active_plugin_count - self._finished_plugin_count
+        self.status_label.setText(f"搜索中: {self._search_keyword}... ({remaining} 个插件剩余)")
+
+        # Check if all plugins finished
+        if self._finished_plugin_count >= self._active_plugin_count:
+            total_results = sum(len(r) for r in self._search_results_by_plugin.values())
+            if total_results > 0:
+                self.status_label.setText(f"找到 {total_results} 个结果")
             else:
-                self.display_results([])
                 self.status_label.setText("未找到结果，请尝试其他关键词")
 
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"搜索失败: {e}")
-            self.status_label.setText("搜索失败")
-        finally:
             self.search_btn.setEnabled(True)
             self.bookname_input.setEnabled(True)
-            self.bookname_input.setEnabled(True)
+
+    def _append_plugin_results(self, plugin_name: str, results: List[SearchResult]):
+        """Append a single plugin's results to the display without clearing existing results."""
+        if not results:
+            return
+
+        # Normalize keyword for comparison
+        normalized_keyword = self._search_keyword.replace(" ", "").lower()
+
+        # Separate exact matches and other results for this plugin
+        exact_matches = []
+        other_results = []
+
+        for result in results:
+            normalized_title = result.title.replace(" ", "").lower()
+            if normalized_title == normalized_keyword:
+                exact_matches.append(result)
+            else:
+                other_results.append(result)
+
+        # Add exact matches to the exact list
+        if exact_matches:
+            self._populate_list_widget(self.exact_list, exact_matches)
+
+        # Add other results to the plugin's tab (create if doesn't exist)
+        if other_results:
+            # Check if this plugin already has a tab
+            existing_tab_index = -1
+            for i in range(self.other_tabs.count()):
+                if self.other_tabs.tabText(i) == plugin_name:
+                    existing_tab_index = i
+                    break
+
+            if existing_tab_index >= 0:
+                # Append to existing tab
+                plugin_list = self.other_tabs.widget(existing_tab_index)
+                self._populate_list_widget(plugin_list, other_results)
+            else:
+                # Create new tab for this plugin
+                plugin_list = QListWidget()
+                plugin_list.setStyleSheet("""
+                    QListWidget {
+                        background-color: transparent;
+                        border: none;
+                        outline: none;
+                    }
+                    QListWidget::item {
+                        background-color: transparent;
+                        border-bottom: 1px solid #3a3a3a;
+                        padding: 4px 0;
+                    }
+                    QListWidget::item:selected {
+                        background-color: transparent;
+                    }
+                """)
+                plugin_list.itemDoubleClicked.connect(self.on_result_double_clicked)
+                self._populate_list_widget(plugin_list, other_results)
+                self.other_tabs.addTab(plugin_list, plugin_name)
+
+        # Enable the "其他结果" tab if it has content
+        if self.other_tabs.count() > 0:
+            self.results_tabs.setTabEnabled(1, True)
 
     def display_results(self, results: List[SearchResult]):
         """Display search results in tabs - exact match and other results grouped by plugin."""
