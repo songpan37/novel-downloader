@@ -1,21 +1,70 @@
 """bqg plugin for novel downloader - 笔趣阁
 
 Based on docs/coding-plan/bqg.md
+
+Search uses JSON API, but chapter content requires Playwright due to
+anti-bot verification that redirects to /userverify.
 """
 
+import os
+import sys
+import time
 import re
+import requests
 from typing import List
 from bs4 import BeautifulSoup
+from urllib.parse import quote
 
 from plugins.base_plugin import BasePlugin
 from core.plugin_interface import SearchResult, ChapterInfo, BookStatus
 from core.plugin_registry import PluginRegistry
 
 
+# Simple logger
+class SimpleLogger:
+    """Simple logger that prints to stdout/stderr."""
+
+    def __init__(self, prefix: str = "[bqg]"):
+        self.prefix = prefix
+
+    def _format(self, level: str, msg: str) -> str:
+        return f"{self.prefix} {level}: {msg}"
+
+    def info(self, msg: str):
+        print(self._format("INFO", msg), file=sys.stdout)
+
+    def warning(self, msg: str):
+        print(self._format("WARN", msg), file=sys.stdout)
+
+    def error(self, msg: str):
+        print(self._format("ERROR", msg), file=sys.stderr)
+
+
+_logger = SimpleLogger()
+
+
+class BrowserAutomationError(Exception):
+    """Exception raised when browser automation fails."""
+    pass
+
+
 class PluginBqg(BasePlugin):
     """Plugin for bqgcp.cc (笔趣阁)"""
 
     BASE_URL = "https://www.bqgcp.cc"
+
+    DEFAULT_CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+    def __init__(self, chrome_path: str = None, headless: bool = False, slow_mo: int = 100):
+        """Initialize the bqg plugin with browser settings."""
+        self._chrome_path = chrome_path or self.DEFAULT_CHROME_PATH
+        self._headless = headless
+        self._slow_mo = slow_mo
+
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._playwright = None
 
     @property
     def name(self) -> str:
@@ -25,89 +74,138 @@ class PluginBqg(BasePlugin):
     def domain(self) -> str:
         return self.BASE_URL
 
-    def search(self, keyword: str) -> List[SearchResult]:
-        """Search for novels on bqgcp.cc.
+    def _ensure_browser(self) -> bool:
+        """Ensure browser is connected and ready."""
+        try:
+            if self._browser is not None and self._page is not None and not self._page.is_closed():
+                return True
 
-        URL format: https://www.bqgcp.cc/s?q={keyword}
+            self._cleanup()
 
-        Search results are in:
-        <div class="so_list bookcase">
-            <div class="type_show">
-                <div class="bookbox">
-                    <div class="box">
-                        <div class="bookimg"><a href="/book/1000/"><img src="..."></a></div>
-                        <div class="bookinfo">
-                            <h4 class="bookname"><a href="/book/1000/">Title</a></h4>
-                            <div class="author">作者：Author</div>
-                            <div class="uptime">Description...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        """
-        results = []
-        search_url = f"{self.BASE_URL}/s?q={keyword}"
+            import asyncio
+            from playwright.sync_api import sync_playwright
+
+            try:
+                existing_loop = asyncio.get_event_loop()
+                if existing_loop.is_running():
+                    asyncio.set_event_loop(None)
+                else:
+                    existing_loop.close()
+            except Exception:
+                pass
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            _logger.info("Starting Playwright...")
+            self._playwright = sync_playwright().start()
+
+            _logger.info(f"Launching browser (headless={self._headless})...")
+            self._browser = self._playwright.chromium.launch(
+                headless=self._headless,
+                slow_mo=self._slow_mo,
+                args=['--start-maximized'],
+                executable_path=self._chrome_path if os.path.exists(self._chrome_path) else None,
+            )
+
+            self._context = self._browser.new_context()
+            self._page = self._context.new_page()
+            _logger.info("Browser ready")
+            return True
+
+        except Exception as e:
+            _logger.error(f"Failed to initialize browser: {e}")
+            self._cleanup()
+            return False
+
+    def _cleanup(self):
+        """Clean up browser resources."""
+        try:
+            if self._context:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+        except Exception:
+            pass
 
         try:
-            html = self.get_html_content(search_url)
-            soup = BeautifulSoup(html, 'html.parser')
+            if self._browser:
+                try:
+                    self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
+        except Exception:
+            pass
 
-            # Find all search result items
-            bookboxes = soup.select('.so_list.bookcase .type_show .bookbox')
-            for item in bookboxes:
-                # Get title and link from h4.bookname a
-                title_elem = item.select_one('.bookinfo h4.bookname a')
-                if not title_elem:
-                    continue
+        try:
+            if self._playwright:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+                self._playwright = None
+        except Exception:
+            pass
 
-                title = title_elem.get('title', '') or title_elem.text.strip()
-                link = title_elem.get('href', '')
+        self._page = None
+
+    def close(self):
+        """Close browser resources."""
+        self._cleanup()
+
+    def search(self, keyword: str) -> List[SearchResult]:
+        """Search for novels on bqgcp.cc using JSON API.
+
+        The search results are loaded dynamically via JavaScript, but we can
+        directly access the JSON API endpoint.
+        """
+        results = []
+
+        try:
+            import json
+
+            encoded_keyword = quote(keyword, safe='')
+
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': f'{self.BASE_URL}/s?q={encoded_keyword}',
+                'X-Requested-With': 'XMLHttpRequest',
+            })
+
+            json_url = f"{self.BASE_URL}/user/search.html?q={encoded_keyword}"
+            json_response = session.get(json_url, timeout=self.REQUEST_TIMEOUT, verify=False)
+            json_response.raise_for_status()
+
+            data = json.loads(json_response.text)
+
+            for item in data:
+                title = item.get('articlename', '')
+                author = item.get('author', '未知')
+                link = item.get('url_list', '')
+
                 if link and not link.startswith('http'):
                     link = self.BASE_URL + link
-
-                # Get author from div.author
-                author = "未知"
-                author_elem = item.select_one('.bookinfo .author')
-                if author_elem:
-                    author_text = author_elem.text.strip()
-                    # Extract author name after "作者："
-                    match = re.search(r'作者：(.+)', author_text)
-                    if match:
-                        author = match.group(1).strip()
-
-                # Get description from div.uptime
-                desc = ""
-                desc_elem = item.select_one('.bookinfo .uptime')
-                if desc_elem:
-                    desc = desc_elem.text.strip()
 
                 results.append(SearchResult(
                     title=title,
                     author=author,
-                    status=BookStatus.UNKNOWN,  # bqg doesn't show status in search
+                    status=BookStatus.UNKNOWN,
                     url=link,
                     plugin=self.name
                 ))
 
         except Exception as e:
-            print(f"[bqg] Search failed: {e}")
+            _logger.error(f"Search failed: {e}")
             raise
 
         return results
 
     def get_chapter_list(self, book_url: str) -> List[ChapterInfo]:
-        """Get chapter list for a book.
-
-        Chapter list is in:
-        <div class="listmain">
-            <dl>
-                <dt>Title最新章节列表</dt>
-                <dd><a href="/book/1000/1.html">1、想等的人</a></dd>
-                <dd><a href="/book/1000/2.html">2、倒计时</a></dd>
-            </dl>
-        </div>
-        """
+        """Get chapter list for a book using HTTP."""
         chapters = []
 
         try:
@@ -139,49 +237,90 @@ class PluginBqg(BasePlugin):
                 ))
 
         except Exception as e:
-            print(f"[bqg] Failed to get chapter list: {e}")
+            _logger.error(f"Failed to get chapter list: {e}")
 
         return chapters
 
     def get_chapter_content(self, chapter_url: str) -> str:
-        """Get chapter content.
+        """Get chapter content using browser automation.
+
+        The chapter page has anti-bot verification that requires JavaScript.
+        We use Playwright to navigate and wait for content to load.
+        """
+        content = ""
+
+        try:
+            if not self._ensure_browser():
+                raise BrowserAutomationError("Failed to initialize browser")
+
+            _logger.info(f"Getting chapter content from: {chapter_url}")
+
+            self._page.goto(chapter_url, wait_until="load", timeout=30000)
+
+            # Wait for content to load (page shows "加载中..." initially)
+            max_wait = 15
+            start_time = time.time()
+
+            while time.time() - start_time < max_wait:
+                # Try to get content using JavaScript (better encoding handling)
+                try:
+                    content_div = self._page.query_selector('#chaptercontent')
+                    if content_div:
+                        raw_text = content_div.inner_text()
+
+                        # Check if content is meaningful (not just the "too short" message)
+                        if raw_text and len(raw_text) > 20:
+                            content = self._clean_content(raw_text)
+                            if content:
+                                break
+                except Exception:
+                    pass
+
+                self._page.wait_for_timeout(500)
+
+            # Fallback: try parsing HTML if JS method failed
+            if not content:
+                html_content = self._page.content()
+                content = self._parse_chapter_content(html_content)
+
+            _logger.info(f"Got chapter content, length: {len(content)}")
+
+        except BrowserAutomationError:
+            raise
+        except Exception as e:
+            _logger.error(f"Failed to get chapter content: {e}")
+
+        return content
+
+    def _parse_chapter_content(self, html: str) -> str:
+        """Parse and clean chapter content from HTML.
 
         Content is in:
         <div id="chaptercontent" class="Readarea ReadAjax_content">
             ...paragraph text...
-            请收藏本站：https://www.bqg78.com
-            手机版：https://m.bqg78.com
         </div>
+
+        Note: The page may show "本章由于字数太少，暂不显示" for short chapters.
         """
-        content_parts = []
+        soup = BeautifulSoup(html, 'html.parser')
 
-        try:
-            html = self.get_html_content(chapter_url)
-            soup = BeautifulSoup(html, 'html.parser')
+        content_div = soup.find('div', id='chaptercontent')
+        if not content_div:
+            return ""
 
-            # Get content from #chaptercontent
-            content_div = soup.select_one('#chaptercontent')
-            if content_div:
-                # Get text, handling <br> tags by replacing with newlines
-                for elem in content_div.find_all(recursive=False):
-                    if elem.name == 'br':
-                        content_parts.append('\n')
-                    else:
-                        text = elem.get_text().strip()
-                        if text:
-                            content_parts.append(text)
+        # Get all text content
+        content_lines = []
+        for elem in content_div.find_all(recursive=False):
+            if elem.name == 'br':
+                continue
+            text = elem.get_text().strip()
+            if text:
+                content_lines.append(text)
 
-                # If no direct children, get all text
-                if not content_parts:
-                    text = content_div.get_text(separator='\n', strip=True)
-                    content_parts = text.split('\n')
+        content = '\n'.join(content_lines)
 
-            # Join and clean
-            content = '\n'.join(content_parts)
-            content = self._clean_content(content)
-
-        except Exception as e:
-            print(f"[bqg] Failed to get chapter content: {e}")
+        # Clean ad text
+        content = self._clean_content(content)
 
         return content
 
@@ -195,6 +334,8 @@ class PluginBqg(BasePlugin):
         ad_keywords = [
             '请收藏本站：',
             '手机版：',
+            '『点此报错』',
+            '『加入书签』',
         ]
 
         lines = content.split('\n')
@@ -211,6 +352,10 @@ class PluginBqg(BasePlugin):
 
         return '\n'.join(cleaned_lines).strip()
 
+    def __del__(self):
+        """Cleanup when object is destroyed."""
+        self._cleanup()
+
 
 # Register plugin
 PluginRegistry.get_instance().register(PluginBqg())
@@ -219,10 +364,13 @@ PluginRegistry.get_instance().register(PluginBqg())
 def create_instance(**kwargs) -> 'PluginBqg':
     """Create a new independent PluginBqg instance.
 
-    Each call creates a new instance with its own HTTP connection.
+    Each call creates a new instance with its own browser.
     This is used when downloading multiple novels simultaneously.
+
+    Args:
+        **kwargs: Arguments passed to PluginBqg constructor
 
     Returns:
         New PluginBqg instance
     """
-    return PluginBqg()
+    return PluginBqg(**kwargs)
