@@ -2,7 +2,7 @@
 
 Based on docs/coding-plan/bqg.md
 
-Search uses JSON API, but chapter content requires Playwright due to
+Both search and chapter content require Playwright due to
 anti-bot verification that redirects to /userverify.
 """
 
@@ -10,7 +10,6 @@ import os
 import sys
 import time
 import re
-import requests
 from typing import List
 from bs4 import BeautifulSoup
 from urllib.parse import quote
@@ -157,55 +156,88 @@ class PluginBqg(BasePlugin):
         self._cleanup()
 
     def search(self, keyword: str) -> List[SearchResult]:
-        """Search for novels on bqgcp.cc using JSON API.
+        """Search for novels on bqgcp.cc using Playwright.
 
-        The search results are loaded dynamically via JavaScript, but we can
-        directly access the JSON API endpoint.
+        The search results are loaded dynamically via JavaScript,
+        so we need Playwright to render the page.
         """
         results = []
 
         try:
-            import json
+            if not self._ensure_browser():
+                raise BrowserAutomationError("Failed to initialize browser")
 
-            encoded_keyword = quote(keyword, safe='')
+            _logger.info(f"Searching for: {keyword}")
 
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': f'{self.BASE_URL}/s?q={encoded_keyword}',
-                'X-Requested-With': 'XMLHttpRequest',
-            })
+            # Navigate to search page
+            search_url = f"{self.BASE_URL}/s?q={quote(keyword, safe='')}"
+            _logger.info(f"Navigating to {search_url}...")
+            self._page.goto(search_url, wait_until="load", timeout=30000)
+            self._page.wait_for_timeout(2000)
 
-            json_url = f"{self.BASE_URL}/user/search.html?q={encoded_keyword}"
-            json_response = session.get(json_url, timeout=10, verify=False)
-            json_response.raise_for_status()
+            # Wait for search results to load
+            max_wait = 10
+            start_time = time.time()
 
-            data = json.loads(json_response.text)
+            while time.time() - start_time < max_wait:
+                # Check if results are loaded
+                html_content = self._page.content()
+                soup = BeautifulSoup(html_content, 'html.parser')
 
-            # API may return integer (1) or empty array when no results
-            if not isinstance(data, list):
-                _logger.warning(f"Search API returned {type(data).__name__} instead of list")
-                return results
+                bookboxes = soup.select('.so_list.bookcase .type_show .bookbox')
+                if bookboxes:
+                    _logger.info(f"Found {len(bookboxes)} results")
+                    break
 
-            for item in data:
-                title = item.get('articlename', '')
-                author = item.get('author', '未知')
-                link = item.get('url_list', '')
+                self._page.wait_for_timeout(500)
 
-                if link and not link.startswith('http'):
-                    link = self.BASE_URL + link
+            # Parse results
+            html_content = self._page.content()
+            results = self._parse_search_results(html_content)
 
-                results.append(SearchResult(
-                    title=title,
-                    author=author,
-                    status=BookStatus.UNKNOWN,
-                    url=link,
-                    plugin=self.name
-                ))
+            _logger.info(f"Found {len(results)} results")
 
+        except BrowserAutomationError:
+            raise
         except Exception as e:
             _logger.error(f"Search failed: {e}")
             raise
+
+        return results
+
+    def _parse_search_results(self, html: str) -> List[SearchResult]:
+        """Parse search results from HTML content."""
+        results = []
+        soup = BeautifulSoup(html, 'html.parser')
+
+        bookboxes = soup.select('.so_list.bookcase .type_show .bookbox')
+        for item in bookboxes:
+            # Get title and link from h4.bookname a
+            title_elem = item.select_one('.bookinfo h4.bookname a')
+            if not title_elem:
+                continue
+
+            title = title_elem.get('title', '') or title_elem.text.strip()
+            link = title_elem.get('href', '')
+            if link and not link.startswith('http'):
+                link = self.BASE_URL + link
+
+            # Get author
+            author = "未知"
+            author_elem = item.select_one('.bookinfo .author')
+            if author_elem:
+                author_text = author_elem.text.strip()
+                match = re.search(r'作者：(.+)', author_text)
+                if match:
+                    author = match.group(1).strip()
+
+            results.append(SearchResult(
+                title=title,
+                author=author,
+                status=BookStatus.UNKNOWN,
+                url=link,
+                plugin=self.name
+            ))
 
         return results
 
