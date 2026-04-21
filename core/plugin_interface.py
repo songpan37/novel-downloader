@@ -31,6 +31,13 @@ class ChapterInfo:
     url: str         # 章节URL
 
 
+@dataclass
+class ChapterContent:
+    """Chapter content with metadata"""
+    content: str     # 章节正文
+    title: str       # 章节名（可能来自API的真实标题）
+
+
 class NovelPlugin(ABC):
     """Abstract base class for novel website plugins"""
 

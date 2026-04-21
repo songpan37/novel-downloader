@@ -54,12 +54,10 @@ class Plugin3yt(BasePlugin):
     Playwright to automate browser interactions.
     """
 
-    BASE_URL = "https://www.3yt.org"
-    SEARCH_URL = BASE_URL
-
+    DEFAULT_BASE_URL = "https://www.3yt.org"
     DEFAULT_CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
-    def __init__(self, chrome_path: str = None, headless: bool = False, slow_mo: int = 100):
+    def __init__(self, chrome_path: str = None, headless: bool = False, slow_mo: int = 100, base_url: str = None):
         """
         Initialize the 3yt plugin with browser settings.
 
@@ -67,10 +65,12 @@ class Plugin3yt(BasePlugin):
             chrome_path: Path to Chrome executable. If None, uses default path.
             headless: Run browser in headless mode.
             slow_mo: Slow down interactions by specified milliseconds.
+            base_url: Base URL for the plugin. If None, uses default.
         """
         self._chrome_path = chrome_path or self.DEFAULT_CHROME_PATH
         self._headless = headless
         self._slow_mo = slow_mo
+        self._base_url = base_url or self.DEFAULT_BASE_URL
 
         self._browser = None
         self._context = None
@@ -83,7 +83,11 @@ class Plugin3yt(BasePlugin):
 
     @property
     def domain(self) -> str:
-        return self.BASE_URL
+        return self._base_url
+
+    @property
+    def SEARCH_URL(self) -> str:
+        return self._base_url
 
     def _ensure_browser(self) -> bool:
         """Ensure browser is connected and ready.
@@ -336,7 +340,7 @@ class Plugin3yt(BasePlugin):
                 # Get link
                 link = title_elem.get('href', '')
                 if link and not link.startswith('http'):
-                    link = self.BASE_URL + link
+                    link = self._base_url + link
 
                 # Get author, status from dd.book_other
                 book_other = item.select_one('dd.book_other')
@@ -469,7 +473,7 @@ class Plugin3yt(BasePlugin):
                             continue
 
                         if chapter_url and not chapter_url.startswith('http'):
-                            chapter_url = self.BASE_URL + chapter_url
+                            chapter_url = self._base_url + chapter_url
 
                         chapters.append(ChapterInfo(
                             index=chapter_idx,
@@ -638,4 +642,9 @@ def create_instance(**kwargs) -> 'Plugin3yt':
     Returns:
         New Plugin3yt instance
     """
-    return Plugin3yt(**kwargs)
+    return Plugin3yt(
+        chrome_path=kwargs.get('chrome_path'),
+        headless=kwargs.get('headless', False),
+        slow_mo=kwargs.get('slow_mo', 100),
+        base_url=kwargs.get('base_url')
+    )

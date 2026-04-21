@@ -6,8 +6,9 @@ from PySide6.QtWidgets import (
     QComboBox, QMessageBox
 )
 from PySide6.QtCore import QThread, Signal, Qt
-from typing import List
+from typing import List, Dict
 import os
+import re
 
 from core.plugin_interface import SearchResult, ChapterInfo
 from core.download_manager import DownloadManager, DownloadMeta
@@ -19,8 +20,11 @@ from datetime import datetime
 class DownloadWorker(QThread):
     """Worker thread for downloading chapters"""
 
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2
+
     progress = Signal(int, int)
-    chapter_status = Signal(int, str)
+    chapter_status = Signal(int, str, str)  # index, status, title
     finished = Signal()
     error = Signal(str)
 
@@ -53,7 +57,7 @@ class DownloadWorker(QThread):
                 return
 
             self._log("正在获取章节列表...")
-            self.chapter_status.emit(-1, "获取章节列表...")
+            self.chapter_status.emit(-1, "获取章节列表...", "")
             chapters = self.plugin.get_chapter_list(self.result.url)
 
             if not chapters:
@@ -89,11 +93,11 @@ class DownloadWorker(QThread):
 
                 chapter_key = str(chapter.index)
 
-                # Check if chapter file already exists and has content > 0
-                chapter_file_path = self.download_manager.get_chapter_file_path(
-                    self.book_save_path, chapter.index, chapter.title
+                # Check if chapter file already exists using find_chapter_file_path
+                existing_file = self.download_manager.find_chapter_file_path(
+                    self.book_save_path, chapter.index
                 )
-                file_exists_and_not_empty = os.path.exists(chapter_file_path) and os.path.getsize(chapter_file_path) > 0
+                file_exists_and_not_empty = existing_file and os.path.getsize(existing_file) > 0
 
                 if chapter_key in downloaded or file_exists_and_not_empty:
                     if file_exists_and_not_empty and chapter_key not in downloaded:
@@ -102,35 +106,58 @@ class DownloadWorker(QThread):
                         meta.downloaded_chapters = downloaded
                         self.download_manager.save_meta(self.book_save_path, meta)
                     self._log(f"[{i+1}/{total}] 跳过 第{chapter.index}章 - {chapter.title} (已存在)")
-                    self.chapter_status.emit(chapter.index, "已存在")
+                    self.chapter_status.emit(chapter.index, "已存在", chapter.title)
                     continue
 
                 self._log(f"[{i+1}/{total}] 下载 第{chapter.index}章 - {chapter.title}")
                 self._log(f"  URL: {chapter.url}")
-                self.chapter_status.emit(chapter.index, "下载中...")
+                self.chapter_status.emit(chapter.index, "下载中...", chapter.title)
 
-                try:
-                    content = self.plugin.get_chapter_content(chapter.url)
-                    if content:
-                        self.download_manager.save_chapter_content(
-                            self.book_save_path,
-                            chapter.index,
-                            chapter.title,
-                            content
-                        )
-                        downloaded[chapter_key] = chapter.title
-                        meta.downloaded_chapters = downloaded
-                        meta.last_updated = datetime.now().isoformat()
-                        self.download_manager.save_meta(self.book_save_path, meta)
-                        self._log(f"  完成，内容长度: {len(content)} 字符")
-                        self.chapter_status.emit(chapter.index, "完成")
-                        self.progress.emit(i + 1, total)
-                    else:
-                        self._log(f"  失败: 内容为空")
-                        self.chapter_status.emit(chapter.index, "内容为空")
-                except Exception as e:
-                    self._log(f"  失败: {e}")
-                    self.chapter_status.emit(chapter.index, "失败")
+                # Retry loop for chapter download
+                content = None
+                chaptername = ""
+                last_error = None
+                for retry in range(self.MAX_RETRIES):
+                    try:
+                        result = self.plugin.get_chapter_content(chapter.url)
+                        # Handle both tuple (bqg) and string (other plugins) returns
+                        if isinstance(result, tuple):
+                            chaptername, content = result
+                            if chaptername:
+                                chapter.title = chaptername
+                        else:
+                            content = result
+
+                        if content:
+                            break  # Success, exit retry loop
+                        else:
+                            last_error = "内容为空"
+                    except Exception as e:
+                        last_error = str(e)
+
+                    if retry < self.MAX_RETRIES - 1:
+                        self._log(f"  下载失败，{self.RETRY_DELAY}秒后重试... ({retry + 1}/{self.MAX_RETRIES})")
+                        self.chapter_status.emit(chapter.index, f"重试中({retry + 1}/{self.MAX_RETRIES})...", chapter.title)
+                        from time import sleep
+                        sleep(self.RETRY_DELAY)
+
+                if content:
+                    self.download_manager.save_chapter_content(
+                        self.book_save_path,
+                        chapter.index,
+                        chapter.title,
+                        content
+                    )
+                    downloaded[chapter_key] = chapter.title
+                    meta.downloaded_chapters = downloaded
+                    meta.last_updated = datetime.now().isoformat()
+                    self.download_manager.save_meta(self.book_save_path, meta)
+                    self._log(f"  完成，内容长度: {len(content)} 字符")
+                    self.chapter_status.emit(chapter.index, "完成", chapter.title)
+                    self.progress.emit(i + 1, total)
+                else:
+                    self._log(f"  失败: {last_error or '未知错误'}")
+                    self.chapter_status.emit(chapter.index, f"失败 - {chapter.title}", chapter.title)
 
             if len(downloaded) == total:
                 self.download_manager.delete_meta(self.book_save_path)
@@ -163,6 +190,7 @@ class DownloadDialog(QDialog):
         self.config = config_manager.load()
         self.worker = None
         self.chapter_status_map = {}
+        self.chapter_titles_map = {}  # Map chapter index to title
         self.book_save_path = ""
         self.category_selected = None
         self.init_ui()
@@ -293,6 +321,38 @@ class DownloadDialog(QDialog):
         self.confirm_btn.clicked.connect(self.on_confirm)
         button_layout.addWidget(self.confirm_btn)
 
+        self.open_folder_btn = QPushButton("查看下载")
+        self.open_folder_btn.setFixedWidth(80)
+        self.open_folder_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a7c4a;
+                border: none;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #5a9c5a;
+            }
+        """)
+        self.open_folder_btn.clicked.connect(self.on_open_folder)
+        self.open_folder_btn.setVisible(False)
+        button_layout.addWidget(self.open_folder_btn)
+
+        self.merge_btn = QPushButton("合并章节")
+        self.merge_btn.setFixedWidth(60)
+        self.merge_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a7c4a;
+                border: none;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #5a9c5a;
+            }
+        """)
+        self.merge_btn.clicked.connect(self.on_merge)
+        self.merge_btn.setVisible(False)
+        button_layout.addWidget(self.merge_btn)
+
         layout.addLayout(button_layout)
 
         # Download progress section (hidden initially)
@@ -336,11 +396,9 @@ class DownloadDialog(QDialog):
         self.category_combo.addItem("请选择类别", userData="")
         self.category_combo.setCurrentIndex(0)
 
-        if self.config.categories:
-            for cat in self.config.categories:
-                self.category_combo.addItem(cat, userData=cat)
-        elif self.config.last_category:
-            self.category_combo.addItem(self.config.last_category, userData=self.config.last_category)
+        # Add all saved categories
+        for cat in self.config.categories:
+            self.category_combo.addItem(cat, userData=cat)
 
         self.category_combo.blockSignals(False)
 
@@ -408,6 +466,11 @@ class DownloadDialog(QDialog):
             self.config.root_dir, category, self.result.title
         )
 
+        # Reset chapter status maps for new download
+        self.chapter_status_map = {}
+        self.chapter_titles_map = {}
+        self.chapter_list.clear()
+
         # Hide category selection, show progress
         self.progress_widget.setVisible(True)
         self.setMinimumSize(520, 500)
@@ -417,6 +480,9 @@ class DownloadDialog(QDialog):
         self.category_combo.setEnabled(False)
         self.add_category_btn.setEnabled(False)
         self.delete_category_btn.setEnabled(False)
+        # Show open folder and merge buttons
+        self.open_folder_btn.setVisible(True)
+        self.merge_btn.setVisible(True)
 
         # Start download
         self.start_download()
@@ -443,19 +509,40 @@ class DownloadDialog(QDialog):
         percentage = int(current / total * 100) if total > 0 else 0
         self.status_label.setText(f"进度: {current}/{total} ({percentage}%)")
 
-    def on_chapter_status(self, index: int, status: str):
+    def on_chapter_status(self, index: int, status: str, title: str = ""):
         """Handle chapter status update."""
         if index == -1:
             self.status_label.setText(status)
             return
 
+        # Store title for use in merge
+        if title:
+            self.chapter_titles_map[index] = title
+
+        # Get the expected filename - use title directly if provided, otherwise construct
+        if title:
+            # Remove duplicate "第x章 " prefix if present (but keep chapter number in filename)
+            match = re.match(r'^第(\d+)章\s+(.*)', title)
+            if match:
+                safe_title = match.group(2).strip()
+            else:
+                safe_title = title
+            # Sanitize filename
+            illegal_chars = '\\/:*?"<>|'
+            for char in illegal_chars:
+                safe_title = safe_title.replace(char, '_')
+            filename = f"第{index}章 {safe_title}.txt" if safe_title else f"第{index}章.txt"
+        else:
+            filename = f"第{index}章.txt"
+
+        item_text = f"{filename} - {status}"
+
         if index not in self.chapter_status_map:
-            item_text = f"第{index}章 - {status}"
             self.chapter_list.addItem(item_text)
             self.chapter_status_map[index] = self.chapter_list.count() - 1
         else:
             item = self.chapter_list.item(self.chapter_status_map[index])
-            item.setText(f"第{index}章 - {status}")
+            item.setText(item_text)
 
         self.chapter_list.scrollToItem(self.chapter_list.item(self.chapter_status_map[index]))
 
@@ -468,6 +555,54 @@ class DownloadDialog(QDialog):
     def on_error(self, error_msg: str):
         """Handle download error."""
         QMessageBox.critical(self, "错误", f"下载失败: {error_msg}")
+
+    def on_open_folder(self):
+        """Open the download folder in file explorer."""
+        if self.book_save_path and os.path.exists(self.book_save_path):
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.book_save_path))
+
+    def on_merge(self):
+        """Merge downloaded chapters into a single file."""
+        if not self.book_save_path or not os.path.exists(self.book_save_path):
+            QMessageBox.warning(self, "提示", "下载目录不存在")
+            return
+
+        # Get all chapter files and sort by chapter number
+        chapter_files = []
+        for filename in os.listdir(self.book_save_path):
+            if filename.endswith('.txt'):
+                # Extract chapter number from filename like "第1章 xxx.txt"
+                match = re.match(r'^第(\d+)章\s+', filename)
+                if match:
+                    chapter_num = int(match.group(1))
+                    chapter_files.append((chapter_num, filename))
+
+        if not chapter_files:
+            QMessageBox.warning(self, "提示", "没有找到已下载的章节文件")
+            return
+
+        # Sort by chapter number
+        chapter_files.sort(key=lambda x: x[0])
+
+        # Merge content
+        merged_content = []
+        for chapter_num, filename in chapter_files:
+            filepath = os.path.join(self.book_save_path, filename)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+                merged_content.append(f"第{chapter_num}章\n{content}\n\n")
+
+        # Save merged file
+        book_title = self.result.title
+        merged_filename = f"{book_title}.txt"
+        merged_filepath = os.path.join(self.book_save_path, merged_filename)
+
+        with open(merged_filepath, 'w', encoding='utf-8') as f:
+            f.writelines(merged_content)
+
+        QMessageBox.information(self, "完成", f"已合并 {len(chapter_files)} 个章节\n保存至: {merged_filename}")
 
     def on_cancel(self):
         """Handle cancel button."""

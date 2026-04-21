@@ -1,13 +1,13 @@
 """Settings dialog for configuration - Modern Dark Theme"""
 
+import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QListWidget, QFileDialog, QWidget
+    QLineEdit, QPushButton, QFileDialog, QWidget, QCheckBox
 )
 from PySide6.QtCore import Qt
 
-from core.config import ConfigManager
-from ui.theme import get_stylesheet, COLORS, SPACING, RADIUS, FONT_SIZES
+from core.config import ConfigManager, DEFAULT_CHROME_PATH
 
 
 class SettingsDialog(QDialog):
@@ -22,192 +22,196 @@ class SettingsDialog(QDialog):
     def init_ui(self):
         """Initialize the dialog UI"""
         self.setWindowTitle("设置")
-        self.setMinimumSize(480, 400)
-        self.setStyleSheet(get_stylesheet())
+        self.setMinimumSize(520, 400)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+            }
+            QLabel {
+                color: #e0e0e0;
+                background-color: #1a1a1a;
+            }
+            QLineEdit {
+                background-color: #2a2a2a;
+                border: 1px solid #404040;
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: #e0e0e0;
+            }
+            QLineEdit:focus {
+                border-color: #606060;
+            }
+            QLineEdit:disabled {
+                background-color: #252525;
+                color: #808080;
+            }
+            QPushButton {
+                background-color: #3a3a3a;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 6px 12px;
+                color: #e0e0e0;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton:pressed {
+                background-color: #2a2a2a;
+            }
+            QCheckBox {
+                color: #e0e0e0;
+                background-color: #1a1a1a;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #505050;
+                background-color: #2a2a2a;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4a7c4a;
+                border-color: #4a7c4a;
+            }
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(SPACING["lg"], SPACING["lg"], SPACING["lg"], SPACING["lg"])
-        layout.setSpacing(SPACING["md"])
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
-        # Title
-        title = QLabel("⚙ 设置")
-        title.setStyleSheet(f"""
-            color: {COLORS["text_primary"]};
-            font-size: {FONT_SIZES["xl"]}px;
-            font-weight: bold;
-        """)
-        layout.addWidget(title)
-
-        # ===== Storage Directory Section =====
-        storage_section = QWidget()
-        storage_section.setStyleSheet(f"""
-            background-color: {COLORS["bg_secondary"]};
-            border-radius: {RADIUS["lg"]}px;
-            padding: {SPACING["md"]}px;
-        """)
-        storage_layout = QVBoxLayout(storage_section)
-        storage_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        storage_layout.setSpacing(SPACING["md"])
-
-        storage_title = QLabel("📁 存储目录")
-        storage_title.setStyleSheet(f"""
-            color: {COLORS["text_primary"]};
-            font-size: {FONT_SIZES["md"]}px;
-            font-weight: bold;
-        """)
-        storage_layout.addWidget(storage_title)
+        # ===== Storage Directory =====
+        storage_label = QLabel("存储目录")
+        storage_label.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold; background-color: #1a1a1a;")
+        layout.addWidget(storage_label)
 
         dir_row = QHBoxLayout()
+        dir_row.setContentsMargins(0, 0, 0, 0)
         self.root_dir_input = QLineEdit()
         self.root_dir_input.setText(self.config.root_dir)
         self.root_dir_input.setPlaceholderText("选择小说存储目录...")
         dir_row.addWidget(self.root_dir_input, 1)
 
         self.browse_btn = QPushButton("浏览")
-        self.browse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_tertiary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: {COLORS["text_primary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["bg_elevated"]};
-            }}
-        """)
+        self.browse_btn.setFixedWidth(80)
         self.browse_btn.clicked.connect(self.on_browse)
         dir_row.addWidget(self.browse_btn)
-        storage_layout.addLayout(dir_row)
+        layout.addLayout(dir_row)
 
-        layout.addWidget(storage_section)
+        # Spacer
+        layout.addSpacing(8)
 
-        # ===== Category Management Section =====
-        category_section = QWidget()
-        category_section.setStyleSheet(f"""
-            background-color: {COLORS["bg_secondary"]};
-            border-radius: {RADIUS["lg"]}px;
-            padding: {SPACING["md"]}px;
-        """)
-        category_layout = QVBoxLayout(category_section)
-        category_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        category_layout.setSpacing(SPACING["md"])
+        # ===== Plugin URLs =====
+        plugin_label = QLabel("插件地址")
+        plugin_label.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold; background-color: #1a1a1a;")
+        layout.addWidget(plugin_label)
 
-        category_title = QLabel("📚 类别管理")
-        category_title.setStyleSheet(f"""
-            color: {COLORS["text_primary"]};
-            font-size: {FONT_SIZES["md"]}px;
-            font-weight: bold;
-        """)
-        category_layout.addWidget(category_title)
+        plugin_desc = QLabel("设置各插件的网站地址（留空使用默认地址）")
+        plugin_desc.setStyleSheet("color: #808080; font-size: 12px; background-color: #1a1a1a;")
+        layout.addWidget(plugin_desc)
 
-        self.category_list = QListWidget()
-        self.category_list.addItems(self.config.categories)
-        self.category_list.setStyleSheet(f"""
-            QListWidget {{
-                background-color: {COLORS["bg_primary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: {SPACING["xs"]}px;
-                color: {COLORS["text_primary"]};
-                min-height: 120px;
-            }}
-            QListWidget::item {{
-                padding: {SPACING["sm"]}px;
-                border-radius: {RADIUS["sm"]}px;
-                color: {COLORS["text_secondary"]};
-            }}
-            QListWidget::item:hover {{
-                background-color: {COLORS["bg_tertiary"]};
-                color: {COLORS["text_primary"]};
-            }}
-            QListWidget::item:selected {{
-                background-color: {COLORS["accent"]};
-                color: white;
-            }}
-        """)
-        category_layout.addWidget(self.category_list)
+        # 3yt plugin URL
+        url_3yt_row = QHBoxLayout()
+        url_3yt_row.setContentsMargins(0, 0, 0, 0)
+        url_3yt_label = QLabel("3yt:")
+        url_3yt_label.setFixedWidth(50)
+        url_3yt_label.setStyleSheet("color: #e0e0e0; background-color: #1a1a1a;")
+        url_3yt_row.addWidget(url_3yt_label)
+        self.url_3yt = QLineEdit()
+        self.url_3yt.setPlaceholderText("https://www.3yt.com/")
+        self.url_3yt.setText(self.config.plugin_urls.get('3yt', ''))
+        url_3yt_row.addWidget(self.url_3yt, 1)
+        layout.addLayout(url_3yt_row)
 
-        category_btn_layout = QHBoxLayout()
+        # 92yq plugin URL
+        url_92yq_row = QHBoxLayout()
+        url_92yq_row.setContentsMargins(0, 0, 0, 0)
+        url_92yq_label = QLabel("92yq:")
+        url_92yq_label.setFixedWidth(50)
+        url_92yq_label.setStyleSheet("color: #e0e0e0; background-color: #1a1a1a;")
+        url_92yq_row.addWidget(url_92yq_label)
+        self.url_92yq = QLineEdit()
+        self.url_92yq.setPlaceholderText("https://www.92yq.com/")
+        self.url_92yq.setText(self.config.plugin_urls.get('92yq', ''))
+        url_92yq_row.addWidget(self.url_92yq, 1)
+        layout.addLayout(url_92yq_row)
 
-        # Add category input
-        self.new_category_input = QLineEdit()
-        self.new_category_input.setPlaceholderText("新类别名称...")
-        self.new_category_input.returnPressed.connect(self.on_add_category)
-        category_btn_layout.addWidget(self.new_category_input, 1)
+        # bqg plugin URL
+        url_bqg_row = QHBoxLayout()
+        url_bqg_row.setContentsMargins(0, 0, 0, 0)
+        url_bqg_label = QLabel("bqg:")
+        url_bqg_label.setFixedWidth(50)
+        url_bqg_label.setStyleSheet("color: #e0e0e0; background-color: #1a1a1a;")
+        url_bqg_row.addWidget(url_bqg_label)
+        self.url_bqg = QLineEdit()
+        self.url_bqg.setPlaceholderText("https://www.bqg655.cc/")
+        self.url_bqg.setText(self.config.plugin_urls.get('bqg', ''))
+        url_bqg_row.addWidget(self.url_bqg, 1)
+        layout.addLayout(url_bqg_row)
 
-        self.add_cat_btn = QPushButton("+ 添加")
-        self.add_cat_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["accent"]};
-                border: none;
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: white;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["accent_hover"]};
-            }}
-        """)
-        self.add_cat_btn.clicked.connect(self.on_add_category)
-        category_btn_layout.addWidget(self.add_cat_btn)
+        # Spacer
+        layout.addSpacing(8)
 
-        self.remove_cat_btn = QPushButton("🗑 删除")
-        self.remove_cat_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_tertiary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 8px 16px;
-                color: {COLORS["text_secondary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["error"]};
-                color: white;
-            }}
-        """)
-        self.remove_cat_btn.clicked.connect(self.on_remove_category)
-        category_btn_layout.addWidget(self.remove_cat_btn)
+        # ===== Browser Mode =====
+        browser_label = QLabel("浏览器模式")
+        browser_label.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold; background-color: #1a1a1a;")
+        layout.addWidget(browser_label)
 
-        category_layout.addLayout(category_btn_layout)
-        layout.addWidget(category_section)
+        self.headless_checkbox = QCheckBox("无头模式（不显示浏览器窗口）")
+        self.headless_checkbox.setChecked(self.config.browser_headless)
+        self.headless_checkbox.setStyleSheet("color: #e0e0e0; background-color: #1a1a1a;")
+        layout.addWidget(self.headless_checkbox)
+
+        # Chrome path
+        chrome_label = QLabel("Chrome 路径")
+        chrome_label.setStyleSheet("color: #e0e0e0; font-size: 13px; background-color: #1a1a1a;")
+        layout.addWidget(chrome_label)
+
+        chrome_row = QHBoxLayout()
+        chrome_row.setContentsMargins(0, 0, 0, 0)
+        self.chrome_path_input = QLineEdit()
+        default_chrome = self.config.chrome_path if self.config.chrome_path else DEFAULT_CHROME_PATH
+        self.chrome_path_input.setText(self.config.chrome_path)
+        self.chrome_path_input.setPlaceholderText(DEFAULT_CHROME_PATH)
+        self.chrome_path_input.textChanged.connect(self.on_chrome_path_changed)
+        chrome_row.addWidget(self.chrome_path_input, 1)
+
+        self.chrome_browse_btn = QPushButton("浏览")
+        self.chrome_browse_btn.setFixedWidth(80)
+        self.chrome_browse_btn.clicked.connect(self.on_chrome_browse)
+        chrome_row.addWidget(self.chrome_browse_btn)
+        layout.addLayout(chrome_row)
+
+        self.chrome_status_label = QLabel("")
+        self.chrome_status_label.setStyleSheet("color: #808080; font-size: 12px; background-color: #1a1a1a;")
+        layout.addWidget(self.chrome_status_label)
+
+        # Check initial chrome path
+        self.check_chrome_path()
 
         # Spacer
         layout.addStretch()
 
         # ===== Dialog Buttons =====
         button_layout = QHBoxLayout()
+        button_layout.addStretch()
 
         self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["bg_tertiary"]};
-                border: 1px solid {COLORS["border"]};
-                border-radius: {RADIUS["md"]}px;
-                padding: 12px 24px;
-                color: {COLORS["text_primary"]};
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["bg_elevated"]};
-            }}
-        """)
+        self.cancel_btn.setFixedWidth(100)
         self.cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(self.cancel_btn)
 
-        self.save_btn = QPushButton("✓ 保存")
-        self.save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS["accent"]};
+        self.save_btn = QPushButton("保存")
+        self.save_btn.setFixedWidth(100)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a7c4a;
                 border: none;
-                border-radius: {RADIUS["md"]}px;
-                padding: 12px 24px;
                 color: white;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS["accent_hover"]};
-            }}
+            }
+            QPushButton:hover {
+                background-color: #5a9c5a;
+            }
         """)
         self.save_btn.clicked.connect(self.on_save)
         button_layout.addWidget(self.save_btn)
@@ -222,21 +226,32 @@ class SettingsDialog(QDialog):
         if dir_path:
             self.root_dir_input.setText(dir_path)
 
-    def on_add_category(self):
-        """Add a new category"""
-        new_category = self.new_category_input.text().strip()
-        if new_category:
-            # Check if already exists
-            existing = [self.category_list.item(i).text() for i in range(self.category_list.count())]
-            if new_category not in existing:
-                self.category_list.addItem(new_category)
-                self.new_category_input.clear()
+    def on_chrome_browse(self):
+        """Handle chrome browse button click"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择 Chrome 可执行文件",
+            self.chrome_path_input.text() or DEFAULT_CHROME_PATH,
+            "Executable (*.exe)"
+        )
+        if file_path:
+            self.chrome_path_input.setText(file_path)
 
-    def on_remove_category(self):
-        """Remove selected category"""
-        current_row = self.category_list.currentRow()
-        if current_row >= 0:
-            self.category_list.takeItem(current_row)
+    def on_chrome_path_changed(self, text):
+        """Handle chrome path text change"""
+        self.check_chrome_path()
+
+    def check_chrome_path(self):
+        """Check if chrome path is valid and update status label"""
+        path = self.chrome_path_input.text().strip()
+        if not path:
+            path = DEFAULT_CHROME_PATH
+
+        if os.path.exists(path):
+            self.chrome_status_label.setText("✓ Chrome 路径有效")
+            self.chrome_status_label.setStyleSheet("color: #4a9f4a; font-size: 12px; background-color: #1a1a1a;")
+        else:
+            self.chrome_status_label.setText("✗ Chrome 路径无效或文件不存在")
+            self.chrome_status_label.setStyleSheet("color: #ff6b6b; font-size: 12px; background-color: #1a1a1a;")
 
     def on_save(self):
         """Save settings and close"""
@@ -244,18 +259,20 @@ class SettingsDialog(QDialog):
         new_root_dir = self.root_dir_input.text().strip()
         self.config_manager.set_root_dir(new_root_dir)
 
-        # Get all categories from list
-        categories = []
-        for i in range(self.category_list.count()):
-            cat = self.category_list.item(i).text().strip()
-            if cat and cat not in categories:
-                categories.append(cat)
-
-        # Rebuild categories
+        # Update config
         config = self.config_manager.load()
-        for cat in config.categories:
-            self.config_manager.remove_category(cat)
-        for cat in categories:
-            self.config_manager.add_category(cat)
+        config.browser_headless = self.headless_checkbox.isChecked()
+        config.chrome_path = self.chrome_path_input.text().strip()
+
+        plugin_urls = {}
+        if self.url_3yt.text().strip():
+            plugin_urls['3yt'] = self.url_3yt.text().strip()
+        if self.url_92yq.text().strip():
+            plugin_urls['92yq'] = self.url_92yq.text().strip()
+        if self.url_bqg.text().strip():
+            plugin_urls['bqg'] = self.url_bqg.text().strip()
+
+        config.plugin_urls = plugin_urls
+        self.config_manager.save(config)
 
         self.accept()

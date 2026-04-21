@@ -1,9 +1,13 @@
 """Base plugin implementation with common functionality"""
 
 import requests
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup
 from time import sleep
 from typing import List
+
+# Suppress InsecureRequestWarning for all requests using verify=False
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 from core.plugin_interface import NovelPlugin, SearchResult, ChapterInfo, BookStatus
 

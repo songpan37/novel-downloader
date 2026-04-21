@@ -1,8 +1,96 @@
 # 网站地址
-https://www.bqgcp.cc/
+https://www.bqg655.cc
 
-# 搜索流程
-直接打开搜索结果网站： https://www.bqgcp.cc/s?q={书名等搜索关键字}
+
+# HTTP请求流程
+
+## 搜索流程
+
+调用API获取书本详情。 请求格式：
+
+GET https://www.bqg655.cc/api/search?q={书名}
+
+响应样例：
+```json
+{
+  "data": [
+    {
+      "id": "144571",
+      "title": "玄鉴仙族",
+      "author": "季越人",
+      "intro": "陆江仙熬夜猝死，残魂却附在了一面满是裂痕的青灰色铜镜上，飘落到了浩瀚无垠的修仙世界。凶险难测的大黎"
+    }
+  ],
+  "title": "搜索结果"
+}
+```
+
+
+# 下载流程
+
+步骤1：获取书本详情：
+
+请求格式：
+
+GET https://www.bqg655.cc/api/book?id={书本ID}
+
+其中：
+`书本ID` 为上一步响应体中的 `id` 字段。
+
+响应样例：
+```json
+{
+  "id": "144571",
+  "title": "玄鉴仙族",
+  "sortname": "女生",
+  "author": "季越人",
+  "full": "连载",
+  "intro": "陆江仙熬夜猝死，残魂却附在了一面满是裂痕的青灰色铜镜上，飘落到了浩瀚无垠的修仙世界。凶险难测的大黎",
+  "lastchapterid": "1607",
+  "lastchapter": "第1461章 恨此宫",
+  "lastupdate": "2026-04-19",
+  "dirid": "144571"
+}
+```
+
+
+步骤2：下载章节内容
+
+请求格式：
+
+GET https://www.bqg655.cc/api/chapter?id={书本ID}&chapterid={章节序号}
+
+`书本ID` 和上一步相同，`章节序号` 是从 1 开始，一直到上一步返回的 `lastchapterid` 字段值。例如，上一步返回的 `lastchapterid` 是 1607，那么说明有1607个章节，chapterid 就是 1 - 1607。
+
+响应样例：
+```json
+{
+  "id": "144571",
+  "chapterid": "1",
+  "dirid": "144571",
+  
+  "title": "玄鉴仙族",
+  "author": "季越人",
+  "chaptername": "第1469章 蝉雀（1+1\/2）（潜龙勿用加更45\/113）",
+  "cs": 1607,
+  "time": 0,
+  "txt": "淅沥沥的小雨从灰色苍穹之上坠落，轻飘飘的淋在城市街道上。或者跳过本章点击下一章继续阅读……"
+}
+
+```
+
+其中：
+`chaptername` 表示章节名，`txt` 表示章节正文
+
+
+
+---
+
+
+# playwright 流程
+
+## 搜索流程
+直接打开搜索结果网站： https://www.bqg655.cc/s?q={书名等搜索关键字}
 
 从如下节点，获取搜索结果：
 ```html
@@ -16,7 +104,7 @@ https://www.bqgcp.cc/
         <div class="type_show">
             <div class="bookbox">
                 <div class="box">
-                    <div class="bookimg"><a href="/book/1000/"><img src="https://www.bqgcp.cc/bookimg/3/3583.jpg"></a></div>
+                    <div class="bookimg"><a href="/book/1000/"><img src="https://www.bqg655.cc/bookimg/3/3583.jpg"></a></div>
                     <div class="bookinfo"><h4 class="bookname"><a href="/book/1000/">夜的命名术</a></h4>
                         <div class="author">作者：会说话的肘子</div>
                         <div class="uptime">
@@ -27,7 +115,7 @@ https://www.bqgcp.cc/
             </div>
             <div class="bookbox">
                 <div class="box">
-                    <div class="bookimg"><a href="/book/90601/"><img src="https://www.bqgcp.cc/bookimg/88/88098.jpg"></a></div>
+                    <div class="bookimg"><a href="/book/90601/"><img src="https://www.bqg655.cc/bookimg/88/88098.jpg"></a></div>
                     <div class="bookinfo"><h4 class="bookname"><a href="/book/90601/">夜的命名术</a></h4>
                         <div class="author">作者：会说话的肘子著</div>
                         <div class="uptime">
@@ -41,15 +129,14 @@ https://www.bqgcp.cc/
 </div>
 ```
 
-需要提取出书名，作者，简介，类别等信息，最重要的是a标签里面的链接：<a href="/book/1000/">，这个表示作品的详情页面
+需要提取出书本ID，书名，作者，简介，类别等信息，最重要的是a标签里面的链接：<a href="/book/1000/">，这个表示作品的详情页面，`/book/1000/`里面，book后面的数字1000表示书本ID。
 
-
-# 下载流程
+## 下载流程
 
 步骤1：获取章节列表
 根据搜索结果获取到的a标签的链接，使用 HTTP GET 获取链接的HTML内容：
 ```
-https://www.bqgcp.cc/book/1000/
+https://www.bqg655.cc/book/1000/
 ```
 
 章节列表，在如下节点里：
@@ -64,9 +151,9 @@ https://www.bqgcp.cc/book/1000/
 ```
 
 步骤2：下载所有章节
-获取到章节列表里面，每个章节的链接，如 https://www.bqgcp.cc/book/1000/1.html 打开链接：
+获取到章节列表里面，每个章节的链接，如 https://www.bqg655.cc/book/1000/1.html 打开链接：
 ```
-https://www.bqgcp.cc/book/1000/1.html
+https://www.bqg655.cc/book/1000/1.html
 ```
 获取HTML内容，在如下节点里，获取章节内容：
 ```html
@@ -90,6 +177,6 @@ https://www.bqgcp.cc/book/1000/1.html
 </div>
 ```
 
-# 清洗流程
+## 清洗流程
 
 获取到章节内容后，需要将带有 `请收藏本站：` 或 `手机版：` 关键字的段落删除。

@@ -15,7 +15,11 @@ from core.plugin_registry import PluginRegistry
 class Plugin92yq(BasePlugin):
     """Plugin for 92yanqing.com (就爱言情小说网)"""
 
-    BASE_URL = "https://www.92yanqing.com"
+    DEFAULT_BASE_URL = "https://www.92yanqing.com"
+
+    def __init__(self, base_url: str = None):
+        super().__init__()
+        self._base_url = base_url or self.DEFAULT_BASE_URL
 
     @property
     def name(self) -> str:
@@ -23,7 +27,7 @@ class Plugin92yq(BasePlugin):
 
     @property
     def domain(self) -> str:
-        return self.BASE_URL
+        return self._base_url
 
     def search(self, keyword: str) -> List[SearchResult]:
         """Search for novels on 92yanqing.
@@ -43,7 +47,7 @@ class Plugin92yq(BasePlugin):
         </div>
         """
         results = []
-        search_url = f"{self.BASE_URL}/s/?searchkey={keyword}"
+        search_url = f"{self._base_url}/s/?searchkey={keyword}"
 
         try:
             html = self.get_html_content(search_url)
@@ -60,7 +64,7 @@ class Plugin92yq(BasePlugin):
                 title = dt_a.get('title', '') or dt_a.text.strip()
                 link = dt_a.get('href', '')
                 if link and not link.startswith('http'):
-                    link = self.BASE_URL + link
+                    link = self._base_url + link
 
                 # Get author from dd a
                 author = "未知"
@@ -127,7 +131,7 @@ class Plugin92yq(BasePlugin):
                     continue
 
                 if chapter_url and not chapter_url.startswith('http'):
-                    chapter_url = self.BASE_URL + chapter_url
+                    chapter_url = self._base_url + chapter_url
 
                 chapters.append(ChapterInfo(
                     index=idx,
@@ -187,7 +191,7 @@ class Plugin92yq(BasePlugin):
                     if '下一章' in next_text or '没有了' in next_text:
                         break
                     if next_href and not next_href.startswith('http'):
-                        next_href = self.BASE_URL + next_href
+                        next_href = self._base_url + next_href
                     current_url = next_href
                 else:
                     break
@@ -211,4 +215,4 @@ def create_instance(**kwargs) -> 'Plugin92yq':
     Returns:
         New Plugin92yq instance
     """
-    return Plugin92yq()
+    return Plugin92yq(base_url=kwargs.get('base_url'))

@@ -83,17 +83,29 @@ class DownloadManager:
         filename = f"第{chapter_index}章 {safe_title}.txt"
         return os.path.join(book_path, filename)
 
+    def find_chapter_file_path(self, book_path: str, chapter_index: int) -> str:
+        """Find the actual file path for a chapter, checking various title possibilities.
+
+        This handles cases where the chapter was saved with a different title than expected.
+        Returns the path if found, empty string if not found.
+        """
+        # Try common patterns
+        patterns = [
+            f"第{chapter_index}章 *.txt",  # Any title
+            f"第{chapter_index}章.txt",     # No title
+        ]
+
+        for pattern in patterns:
+            import fnmatch
+            for filename in os.listdir(book_path):
+                if fnmatch.fnmatch(filename, pattern):
+                    return os.path.join(book_path, filename)
+
+        return ""
+
     def is_chapter_downloaded(self, book_path: str, chapter_index: int) -> bool:
         """Check if a chapter has been downloaded"""
-        meta_path = self.get_meta_file_path(book_path)
-        if not os.path.exists(meta_path):
-            return False
-        try:
-            with open(meta_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return str(chapter_index) in data.get('downloaded_chapters', {})
-        except (json.JSONDecodeError, KeyError):
-            return False
+        return self.find_chapter_file_path(book_path, chapter_index) != ""
 
     def save_chapter_content(self, book_path: str, chapter_index: int, chapter_title: str, content: str) -> str:
         """Save chapter content to file"""

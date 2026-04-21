@@ -27,6 +27,9 @@ import plugins.plugin_bqg as plugin_bqg_module
 class SearchWorker(QThread):
     """Worker thread for searching a single plugin."""
 
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2
+
     # Signals for search results
     result_ready = Signal(str, list)  # plugin_name, results
     search_failed = Signal(str, str)  # plugin_name, error_message
@@ -39,14 +42,24 @@ class SearchWorker(QThread):
         self.keyword = keyword
 
     def run(self):
-        """Execute the search."""
-        try:
-            results = self.plugin.search(self.keyword)
-            self.result_ready.emit(self.plugin_name, results)
-        except Exception as e:
-            self.search_failed.emit(self.plugin_name, str(e))
-        finally:
-            self.search_finished.emit(self.plugin_name)
+        """Execute the search with retry logic."""
+        from time import sleep
+
+        last_error = None
+        for retry in range(self.MAX_RETRIES):
+            try:
+                results = self.plugin.search(self.keyword)
+                self.result_ready.emit(self.plugin_name, results)
+                return  # Success, exit
+            except Exception as e:
+                last_error = str(e)
+                if retry < self.MAX_RETRIES - 1:
+                    print(f"[{self.plugin_name}] Search failed, retrying in {self.RETRY_DELAY}s... ({retry + 1}/{self.MAX_RETRIES})")
+                    sleep(self.RETRY_DELAY)
+
+        # All retries failed
+        self.search_failed.emit(self.plugin_name, last_error or "Unknown error")
+        self.search_finished.emit(self.plugin_name)
 
 
 class MainWindow(QMainWindow):
@@ -73,7 +86,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """Initialize the UI components"""
-        self.setWindowTitle("小说下载器")
+        self.setWindowTitle("Novel Downloader")
         self.setMinimumSize(800, 600)
         self.setFont(QFont("Segoe UI", 10))
 
@@ -177,9 +190,20 @@ class MainWindow(QMainWindow):
         # ===== Header =====
         header_layout = QHBoxLayout()
 
-        title = QLabel("小说下载器")
-        title.setStyleSheet("color: #e0e0e0; font-size: 20px; font-weight: bold;")
-        header_layout.addWidget(title)
+        title_label = QLabel("Novel Downloader")
+        title_label.setStyleSheet("""
+            color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5aBD5a, stop:1 #3a8f3a);
+            font-size: 24px;
+            font-weight: bold;
+            font-style: italic;
+            font-family: 'Georgia', 'Times New Roman', serif;
+            letter-spacing: 4px;
+            padding: 4px 12px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a2a1a, stop:1 #0a150a);
+            border-radius: 6px;
+            border: 1px solid #2a4a2a;
+        """)
+        header_layout.addWidget(title_label)
         header_layout.addStretch()
 
         settings_btn = QPushButton("设置")
@@ -319,7 +343,8 @@ class MainWindow(QMainWindow):
         self._active_plugin_count = len(plugin_names)
 
         for plugin_name in plugin_names:
-            plugin = self.plugin_registry.get_plugin(plugin_name)
+            # Create plugin instance with configured URL
+            plugin = self._create_plugin_instance(plugin_name)
             if not plugin:
                 self._on_plugin_search_finished(plugin_name)
                 continue
@@ -635,12 +660,21 @@ class MainWindow(QMainWindow):
 
         Each download gets its own plugin instance to avoid conflicts.
         """
+        # Get plugin URL, browser headless setting and chrome path from config
+        plugin_url = self.config_manager.get_plugin_url(plugin_name)
+        headless = self.config.browser_headless  # True = 无头(不显示窗口), False = 显示窗口
+        chrome_path = self.config.chrome_path if self.config.chrome_path else None
+
         if plugin_name == '3yt':
-            return plugin_3yt_module.create_instance(headless=False, slow_mo=100)
+            return plugin_3yt_module.create_instance(
+                headless=headless, slow_mo=100, base_url=plugin_url, chrome_path=chrome_path
+            )
         elif plugin_name == '92yq':
-            return plugin_92yq_module.create_instance()
+            return plugin_92yq_module.create_instance(base_url=plugin_url)
         elif plugin_name == 'bqg':
-            return plugin_bqg_module.create_instance()
+            return plugin_bqg_module.create_instance(
+                headless=headless, base_url=plugin_url, chrome_path=chrome_path
+            )
         else:
             # Fallback to registry plugin
             return self.plugin_registry.get_plugin(plugin_name)
