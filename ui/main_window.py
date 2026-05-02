@@ -50,6 +50,7 @@ class SearchWorker(QThread):
             try:
                 results = self.plugin.search(self.keyword)
                 self.result_ready.emit(self.plugin_name, results)
+                self.search_finished.emit(self.plugin_name)
                 return  # Success, exit
             except Exception as e:
                 last_error = str(e)
@@ -273,7 +274,6 @@ class MainWindow(QMainWindow):
                 background-color: transparent;
             }
         """)
-        self.exact_list.itemDoubleClicked.connect(self.on_result_double_clicked)
         self.results_tabs.addTab(self.exact_list, "精确匹配")
 
         # Tab 2: Other results (grouped by plugin)
@@ -446,7 +446,6 @@ class MainWindow(QMainWindow):
                         background-color: transparent;
                     }
                 """)
-                plugin_list.itemDoubleClicked.connect(self.on_result_double_clicked)
                 self._populate_list_widget(plugin_list, other_results)
                 self.other_tabs.addTab(plugin_list, plugin_name)
 
@@ -504,7 +503,6 @@ class MainWindow(QMainWindow):
                         background-color: transparent;
                     }
                 """)
-                plugin_list.itemDoubleClicked.connect(self.on_result_double_clicked)
                 self._populate_list_widget(plugin_list, plugin_results_list)
                 self.other_tabs.addTab(plugin_list, plugin_name)
 
@@ -626,20 +624,6 @@ class MainWindow(QMainWindow):
             size_hint = widget.sizeHint()
             size_hint.setHeight(max(size_hint.height(), 70))
             item.setSizeHint(size_hint)
-
-    def on_result_double_clicked(self, item: QListWidgetItem):
-        """Handle result item double click."""
-        result = item.data(Qt.UserRole)
-        if not result:
-            return
-
-        dialog = DownloadDialog(
-            result=result,
-            download_manager=self.download_manager,
-            config_manager=self.config_manager,
-            parent=self
-        )
-        dialog.exec()
 
     def on_download_clicked(self, result: SearchResult):
         """Handle download button click - creates independent plugin instance."""
